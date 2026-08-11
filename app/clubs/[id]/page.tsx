@@ -10,6 +10,7 @@ type Book={catalogId:string;title:string;authors:string[];description:string|nul
 type SavedBook={id:string;title:string;authors:string[];description:string|null;page_count:number|null;cover_url:string|null;google_books_id:string};
 type ClubBook={is_current:boolean;status:"nominated"|"current"|"finished";completed_at:string|null;nominated_by:string;nominated_at:string;book:SavedBook;votes:{user_id:string}[]};
 type Progress={user_id:string;display_name:string;current_page:number|null;progress_percent:number;finished_at:string|null};
+type Review={user_id:string;display_name:string;rating:number;review:string|null;updated_at:string};
 type ConfirmAction={title:string;description:string;label:string;run:()=>Promise<void>};
 
 export default function ClubPage(){
@@ -20,6 +21,7 @@ export default function ClubPage(){
   const [club,setClub]=useState<Club|null>(null);
   const [books,setBooks]=useState<ClubBook[]>([]);
   const [progress,setProgress]=useState<Progress[]>([]);
+  const [reviews,setReviews]=useState<Review[]>([]);
   const [message,setMessage]=useState("");
   const [toast,setToast]=useState("");
   const [mode,setMode]=useState<"page"|"percent">("page");
@@ -36,6 +38,10 @@ export default function ClubPage(){
   const [loadingClub,setLoadingClub]=useState(true);
   const [refreshing,setRefreshing]=useState(false);
   const [accountOpen,setAccountOpen]=useState(false);
+  const [showReview,setShowReview]=useState(false);
+  const [reviewRating,setReviewRating]=useState(0);
+  const [reviewText,setReviewText]=useState("");
+  const [savingReview,setSavingReview]=useState(false);
   const toastTimer=useRef<number|null>(null);
 
   useEffect(()=>{supabase.auth.getSession().then(({data})=>{if(!data.session){window.location.href="/";return;}setSession(data.session);setChecking(false);});},[]);
@@ -57,11 +63,12 @@ export default function ClubPage(){
     if(error){setMessage(error.message);setRefreshing(false);return;}
     const loaded=(data??[]) as unknown as ClubBook[];setBooks(loaded);
     const current=loaded.find((item)=>item.is_current);
-    if(current){if(!current.book.page_count)setMode("percent");await loadProgress(current.book.id);}else setProgress([]);
+    if(current){if(!current.book.page_count)setMode("percent");await Promise.all([loadProgress(current.book.id),loadReviews(current.book.id)]);}else{setProgress([]);setReviews([]);}
     setRefreshing(false);
   }
 
   async function loadProgress(bookId:string){const {data,error}=await supabase.rpc("get_club_reading_progress",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else setProgress((data??[]) as Progress[]);}
+  async function loadReviews(bookId:string){const {data,error}=await supabase.rpc("get_club_book_reviews",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else setReviews((data??[]) as Review[]);}
 
   async function updateProgress(event:FormEvent<HTMLFormElement>){
     event.preventDefault();const current=books.find((item)=>item.is_current);if(!current||value==="")return;
@@ -72,8 +79,10 @@ export default function ClubPage(){
       if(pageCountError){setMessage(pageCountError.message);setSavingProgress(false);return;}
     }
     const {error}=await supabase.rpc("update_club_reading_progress",{target_club_id:clubId,target_book_id:current.book.id,entered_page:mode==="page"?number:null,entered_percent:mode==="percent"?number:null});
-    if(error)setMessage(error.message);else{await loadBooks();setValue("");setTotalPages("");notify("Your reading progress was updated.");}setSavingProgress(false);
+    if(error)setMessage(error.message);else{await loadBooks();setValue("");setTotalPages("");const completed=mode==="percent"?number===100:number===current.book.page_count;if(completed){const existing=reviews.find((review)=>review.user_id===session?.user.id);setReviewRating(existing?.rating??0);setReviewText(existing?.review??"");setShowReview(true);}else notify("Your reading progress was updated.");}setSavingProgress(false);
   }
+
+  async function saveReview(event:FormEvent<HTMLFormElement>){event.preventDefault();const current=books.find((item)=>item.is_current);if(!current||reviewRating<1)return;setSavingReview(true);const {error}=await supabase.rpc("save_reading_review",{target_book_id:current.book.id,target_rating:reviewRating,review_text:reviewText,target_club_id:clubId});if(error)setMessage(error.message);else{await loadReviews(current.book.id);setShowReview(false);notify("Your club review was saved.");}setSavingReview(false);}
 
   async function toggleVote(bookId:string){const {error}=await supabase.rpc("toggle_book_vote",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else await loadBooks();}
   async function chooseBook(bookId:string){const {error}=await supabase.rpc("select_club_book",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else{await loadBooks();notify("The club's current book has been chosen.");}}
@@ -102,6 +111,8 @@ export default function ClubPage(){
     {showSearch&&<div className="modal-backdrop search-layer" onMouseDown={()=>setShowSearch(false)}><section className="modal search-modal" onMouseDown={(event)=>event.stopPropagation()}><button className="close" onClick={()=>setShowSearch(false)}>×</button><span className="eyebrow coral">CLUB NOMINATION</span><h2>Nominate for {club.name}</h2><p>Search by title, author, or ISBN.</p><form className="search-form" onSubmit={searchBooks}><input value={query} onChange={(event)=>setQuery(event.target.value)} placeholder="e.g. The Midnight Library" autoFocus/><button className="primary" disabled={searching||query.trim().length<2}>{searching?"Searching…":"Search"}</button></form><div className="search-results">{results.map((book)=>{const added=books.some((item)=>item.book.google_books_id===book.catalogId);return <article className="search-result" key={book.catalogId}><BookCover title={book.title} url={book.coverUrl}/><div><h3>{book.title}</h3><p className="byline">{book.authors.join(", ")||"Unknown author"}</p><small>{book.pageCount?`${book.pageCount} pages`:"Page count unavailable"}</small>{book.description&&<p>{book.description}</p>}</div><button className="secondary" disabled={added||savingId===book.catalogId} onClick={()=>nominate(book)}>{added?"On shortlist ✓":savingId===book.catalogId?"Nominating…":"Nominate →"}</button></article>})}</div></section></div>}
     {confirmAction&&<div className="modal-backdrop confirm-layer" onMouseDown={()=>!confirming&&setConfirmAction(null)}><section className="modal confirm-modal" onMouseDown={(event)=>event.stopPropagation()}><button className="close" onClick={()=>setConfirmAction(null)}>×</button><span className="eyebrow coral">PLEASE CONFIRM</span><h2>{confirmAction.title}</h2><p>{confirmAction.description}</p><div className="form-actions"><button className="secondary" onClick={()=>setConfirmAction(null)}>Cancel</button><button className="danger-button" onClick={runConfirmed} disabled={confirming}>{confirming?"Removing…":confirmAction.label}</button></div></section></div>}
     {toast&&<div className="toast" role="status"><span>✓</span><p>{toast}</p><button onClick={()=>setToast("")}>×</button></div>}
+    {current&&mine?.finished_at&&<section className="club-reviews"><div className="section-title"><div><span className="eyebrow coral">AFTER THE LAST PAGE</span><h2>Reader reviews</h2></div><button className="secondary" onClick={()=>{const existing=reviews.find((review)=>review.user_id===session?.user.id);setReviewRating(existing?.rating??0);setReviewText(existing?.review??"");setShowReview(true)}}>{reviews.some((review)=>review.user_id===session?.user.id)?"Edit your review":"Add your review"}</button></div>{reviews.length===0?<div className="quiet-empty"><span>★</span><div><strong>Be the first to review this book</strong><small>Ratings appear here once readers finish.</small></div></div>:<div className="review-grid">{reviews.map((review)=><article key={review.user_id}><div><span className="member-avatar">{review.display_name.slice(0,2).toUpperCase()}</span><strong>{review.user_id===session?.user.id?"You":review.display_name}</strong></div><b aria-label={`${review.rating} out of 5 stars`}>{"★".repeat(review.rating)}{"☆".repeat(5-review.rating)}</b>{review.review&&<p>{review.review}</p>}</article>)}</div>}</section>}
+    {showReview&&current&&<div className="modal-backdrop review-layer" onMouseDown={()=>!savingReview&&setShowReview(false)}><section className="modal review-modal" role="dialog" aria-modal="true" aria-labelledby="club-review-title" onMouseDown={(event)=>event.stopPropagation()}><button className="close" onClick={()=>setShowReview(false)} disabled={savingReview} aria-label="Close">×</button><span className="eyebrow coral">YOU FINISHED IT</span><h2 id="club-review-title">How was {current.book.title}?</h2><p>Your fellow club members can see this once they open the club.</p><form onSubmit={saveReview}><fieldset className="star-rating"><legend>Your rating</legend>{[1,2,3,4,5].map((star)=><button type="button" key={star} className={star<=reviewRating?"selected":""} onClick={()=>setReviewRating(star)} aria-label={`${star} star${star===1?"":"s"}`}>★</button>)}</fieldset><label>Your review <small>Optional</small><textarea maxLength={2000} value={reviewText} onChange={(event)=>setReviewText(event.target.value)} placeholder="What should the club discuss?"/></label><div className="form-actions"><button type="button" className="secondary" onClick={()=>{setShowReview(false);notify("You finished this book. Review it whenever you’re ready.")}} disabled={savingReview}>Skip for now</button><button className="primary" disabled={savingReview||reviewRating<1}>{savingReview?"Saving…":"Share review →"}</button></div></form></section></div>}
   </main>;
 }
 
