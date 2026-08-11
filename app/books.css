@@ -26,3 +26,5 @@
 .current-dashboard{padding-bottom:16px}#clubs.dashboard{padding-top:34px}@media(max-width:560px){.current-dashboard{padding-bottom:8px}#clubs.dashboard{padding-top:28px}}
 
 .current-dashboard{padding-bottom:0}#clubs.dashboard{padding-top:12px}@media(max-width:560px){.current-dashboard{padding-bottom:0}#clubs.dashboard{padding-top:8px}}
+
+.library-modal-heading{padding-right:54px}.library-modal>.close{z-index:3}@media(max-width:560px){.library-modal-heading{padding-right:42px}}
