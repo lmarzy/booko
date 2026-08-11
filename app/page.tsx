@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 
@@ -23,12 +23,21 @@ export default function Home() {
   const [library, setLibrary] = useState<LibraryBook[]>([]);
   const [searching, setSearching] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const messageTimer = useRef<number | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => { setSession(next); setChecking(false); });
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => () => { if (messageTimer.current) window.clearTimeout(messageTimer.current); }, []);
+
+  function showTemporaryMessage(text:string) {
+    if (messageTimer.current) window.clearTimeout(messageTimer.current);
+    setMessage(text);
+    messageTimer.current = window.setTimeout(() => setMessage(""), 4000);
+  }
 
   useEffect(() => {
     if (!session) { setClubs([]); return; }
@@ -65,7 +74,7 @@ export default function Home() {
       book_google_id:book.catalogId, book_title:book.title, book_authors:book.authors,
       book_description:book.description, book_page_count:book.pageCount, book_cover_url:book.coverUrl, book_isbn13:book.isbn13,
     });
-    if (error) setMessage(error.message); else { setMessage(`“${book.title}” was added to your library.`); await loadLibrary(); }
+    if (error) setMessage(error.message); else { showTemporaryMessage(`“${book.title}” was added to your library.`); await loadLibrary(); }
     setSavingId(null);
   }
 
@@ -103,7 +112,7 @@ export default function Home() {
 
   const displayName = String(session.user.user_metadata?.display_name || session.user.email?.split("@")[0] || "Reader");
   return <main className="app-shell">
-    <header className="app-header"><a className="brand" href="/"><span className="brand-mark">b</span><span>booko</span></a><nav><a className="active" href="#clubs">My clubs</a><a href="#reading">Reading</a></nav><div className="account"><span className="avatar">{displayName.slice(0,2).toUpperCase()}</span><div><strong>{displayName}</strong><small>{session.user.email}</small></div><button onClick={() => supabase.auth.signOut()}>Sign out</button></div></header>
+    <header className="app-header"><a className="brand" href="/"><span className="brand-mark">b</span><span>booko</span></a><nav><a className="active" href="#clubs">My clubs</a><a href="#reading">Reading</a></nav><div className="account"><span className="avatar">{displayName.slice(0,2).toUpperCase()}</span><div className="account-info"><strong>{displayName}</strong><small>{session.user.email}</small><button onClick={() => supabase.auth.signOut()}>Sign out</button></div></div></header>
     <section className="welcome"><div><span className="eyebrow">YOUR READING CIRCLE</span><h1>Welcome, {displayName}.</h1><p>{clubs.length ? "Your next good conversation starts here." : "Let’s create a place for your first shared story."}</p></div><div className="welcome-actions"><button className="secondary" onClick={() => setShowSearch(true)}>⌕ Find a book</button><button className="primary" onClick={() => setShowCreate(true)}>＋ Create a club</button></div></section>
     <section className="dashboard library-section" id="reading"><div className="section-title"><div><span className="eyebrow coral">YOUR BOOKSHELF</span><h2>Books you want to read</h2></div><button className="text-button" onClick={() => setShowSearch(true)}>Find a book →</button></div>
       {message && <p className="notice" role="status">{message}</p>}
