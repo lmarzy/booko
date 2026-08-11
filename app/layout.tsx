@@ -15,15 +15,15 @@ const geistMono = Geist_Mono({
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
-  const host = requestHeaders.get("x-forwarded-host") || requestHeaders.get("host") || "booko-reading-club.me-188d.chatgpt.site";
+  const host = requestHeaders.get("x-forwarded-host") || requestHeaders.get("host") || "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
   const image = `${protocol}://${host}/og.png`;
   return {
-    title: "Booko — read better, together",
-    description: "Create a book club, invite your people, and share the stories you love.",
-    icons: { icon:"/favicon.svg", shortcut:"/favicon.svg" },
-    openGraph: { title:"Booko — read better, together", description:"Good books are better when shared.", images:[image] },
-    twitter: { card:"summary_large_image", title:"Booko — read better, together", description:"Good books are better when shared.", images:[image] },
+    title:"Booko — Read better, together",
+    description:"Create a book club, gather your readers, and share every chapter.",
+    icons:{icon:"/favicon.svg",shortcut:"/favicon.svg"},
+    openGraph:{title:"Booko — Read better, together",description:"Good books become great conversations.",images:[image]},
+    twitter:{card:"summary_large_image",title:"Booko — Read better, together",description:"Good books become great conversations.",images:[image]},
   };
 }
 
