@@ -5,9 +5,10 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 
 type AuthMode = "signin" | "signup" | "forgot";
-type Club = { id:string; name:string; description:string | null; created_at:string };
+type Club = { id:string; host_id:string; name:string; description:string | null; created_at:string };
 type Book = { catalogId:string; title:string; authors:string[]; description:string | null; pageCount:number | null; coverUrl:string | null; isbn13:string | null };
 type LibraryBook = { id:string; title:string; authors:string[]; description:string | null; page_count:number | null; cover_url:string | null; google_books_id:string };
+type ClubBook = { is_current:boolean; nominated_at:string; book:LibraryBook; votes:{ user_id:string }[] };
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
@@ -23,6 +24,9 @@ export default function Home() {
   const [library, setLibrary] = useState<LibraryBook[]>([]);
   const [searching, setSearching] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [activeClub, setActiveClub] = useState<Club | null>(null);
+  const [clubBooks, setClubBooks] = useState<ClubBook[]>([]);
+  const [searchClub, setSearchClub] = useState<Club | null>(null);
   const messageTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -45,8 +49,22 @@ export default function Home() {
   }, [session]);
 
   async function loadClubs() {
-    const { data, error } = await supabase.from("clubs").select("id,name,description,created_at").order("created_at", { ascending:false });
+    const { data, error } = await supabase.from("clubs").select("id,host_id,name,description,created_at").order("created_at", { ascending:false });
     if (error) setMessage(error.message); else setClubs(data ?? []);
+  }
+
+  async function openClub(club:Club) {
+    setActiveClub(club); setMessage("");
+    await loadClubBooks(club.id);
+  }
+
+  async function loadClubBooks(clubId:string) {
+    const { data, error } = await supabase.from("club_books").select("is_current,nominated_at,book:books(id,title,authors,description,page_count,cover_url,google_books_id),votes:book_votes(user_id)").eq("club_id",clubId).order("is_current",{ascending:false}).order("nominated_at",{ascending:false});
+    if (error) setMessage(error.message); else setClubBooks((data ?? []) as unknown as ClubBook[]);
+  }
+
+  function openBookSearch(club:Club|null = null) {
+    setSearchClub(club); setShowSearch(true); setQuery(""); setResults([]); setMessage("");
   }
 
   async function loadLibrary() {
@@ -70,12 +88,27 @@ export default function Home() {
 
   async function saveBook(book:Book) {
     setSavingId(book.catalogId); setMessage("");
-    const { error } = await supabase.rpc("add_book_to_library", {
-      book_google_id:book.catalogId, book_title:book.title, book_authors:book.authors,
-      book_description:book.description, book_page_count:book.pageCount, book_cover_url:book.coverUrl, book_isbn13:book.isbn13,
-    });
-    if (error) setMessage(error.message); else { showTemporaryMessage(`“${book.title}” was added to your library.`); await loadLibrary(); }
+    const bookFields = { book_google_id:book.catalogId, book_title:book.title, book_authors:book.authors, book_description:book.description, book_page_count:book.pageCount, book_cover_url:book.coverUrl, book_isbn13:book.isbn13 };
+    const { error } = searchClub
+      ? await supabase.rpc("nominate_book_to_club", { target_club_id:searchClub.id, ...bookFields })
+      : await supabase.rpc("add_book_to_library", bookFields);
+    if (error) setMessage(error.message); else if (searchClub) {
+      showTemporaryMessage(`“${book.title}” was added to ${searchClub.name}'s shortlist.`);
+      await loadClubBooks(searchClub.id);
+    } else { showTemporaryMessage(`“${book.title}” was added to your library.`); await loadLibrary(); }
     setSavingId(null);
+  }
+
+  async function toggleVote(bookId:string) {
+    if (!activeClub) return;
+    const { error } = await supabase.rpc("toggle_book_vote",{target_club_id:activeClub.id,target_book_id:bookId});
+    if (error) setMessage(error.message); else await loadClubBooks(activeClub.id);
+  }
+
+  async function chooseBook(bookId:string) {
+    if (!activeClub) return;
+    const { error } = await supabase.rpc("select_club_book",{target_club_id:activeClub.id,target_book_id:bookId});
+    if (error) setMessage(error.message); else { showTemporaryMessage("The club's current book has been chosen."); await loadClubBooks(activeClub.id); }
   }
 
   async function submitAuth(event:FormEvent<HTMLFormElement>) {
@@ -113,16 +146,17 @@ export default function Home() {
   const displayName = String(session.user.user_metadata?.display_name || session.user.email?.split("@")[0] || "Reader");
   return <main className="app-shell">
     <header className="app-header"><a className="brand" href="/"><span className="brand-mark">b</span><span>booko</span></a><nav><a className="active" href="#clubs">My clubs</a><a href="#reading">Reading</a></nav><div className="account"><span className="avatar">{displayName.slice(0,2).toUpperCase()}</span><div className="account-info"><strong>{displayName}</strong><small>{session.user.email}</small><button onClick={() => supabase.auth.signOut()}>Sign out</button></div></div></header>
-    <section className="welcome"><div><span className="eyebrow">YOUR READING CIRCLE</span><h1>Welcome, {displayName}.</h1><p>{clubs.length ? "Your next good conversation starts here." : "Let’s create a place for your first shared story."}</p></div><div className="welcome-actions"><button className="secondary" onClick={() => setShowSearch(true)}>⌕ Find a book</button><button className="primary" onClick={() => setShowCreate(true)}>＋ Create a club</button></div></section>
-    <section className="dashboard library-section" id="reading"><div className="section-title"><div><span className="eyebrow coral">YOUR BOOKSHELF</span><h2>Books you want to read</h2></div><button className="text-button" onClick={() => setShowSearch(true)}>Find a book →</button></div>
+    <section className="welcome"><div><span className="eyebrow">YOUR READING CIRCLE</span><h1>Welcome, {displayName}.</h1><p>{clubs.length ? "Your next good conversation starts here." : "Let’s create a place for your first shared story."}</p></div><div className="welcome-actions"><button className="secondary" onClick={() => openBookSearch()}>⌕ Find a book</button><button className="primary" onClick={() => setShowCreate(true)}>＋ Create a club</button></div></section>
+    <section className="dashboard library-section" id="reading"><div className="section-title"><div><span className="eyebrow coral">YOUR BOOKSHELF</span><h2>Books you want to read</h2></div><button className="text-button" onClick={() => openBookSearch()}>Find a book →</button></div>
       {message && <p className="notice" role="status">{message}</p>}
-      {library.length === 0 ? <button className="library-empty" onClick={() => setShowSearch(true)}><span>⌕</span><strong>Search for your first book</strong><small>Find it by title, author, or ISBN and add it to your reading list.</small></button> : <div className="book-grid">{library.map((book)=><article className="book-card" key={book.id}><BookCover title={book.title} url={book.cover_url}/><div><span className="pill">WANT TO READ</span><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.page_count ? `${book.page_count} pages` : "Page count unavailable"}</small></div></article>)}</div>}
+      {library.length === 0 ? <button className="library-empty" onClick={() => openBookSearch()}><span>⌕</span><strong>Search for your first book</strong><small>Find it by title, author, or ISBN and add it to your reading list.</small></button> : <div className="book-grid">{library.map((book)=><article className="book-card" key={book.id}><BookCover title={book.title} url={book.cover_url}/><div><span className="pill">WANT TO READ</span><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.page_count ? `${book.page_count} pages` : "Page count unavailable"}</small></div></article>)}</div>}
     </section>
     <section className="dashboard" id="clubs"><div className="section-title"><div><span className="eyebrow coral">HOSTING & READING</span><h2>Your book clubs</h2></div><span>{clubs.length} {clubs.length === 1 ? "club" : "clubs"}</span></div>{message && <p className="notice" role="status">{message}</p>}
-      {clubs.length === 0 ? <button className="empty-state" onClick={() => setShowCreate(true)}><span>＋</span><strong>Create your first book club</strong><small>Name your circle now. We’ll choose a book and invite members next.</small><em>Get started →</em></button> : <div className="club-list">{clubs.map((club,index)=><article className="club-card" key={club.id}><div className={`club-accent accent-${index%3}`}><span>{String(index+1).padStart(2,"0")}</span></div><div><span className="pill">HOST</span><h3>{club.name}</h3><p>{club.description || "A new reading circle, ready for its first book."}</p><div className="club-meta"><span>○ 1 member</span><span>Book not chosen</span></div></div><button aria-label={`Open ${club.name}`}>→</button></article>)}</div>}
+      {clubs.length === 0 ? <button className="empty-state" onClick={() => setShowCreate(true)}><span>＋</span><strong>Create your first book club</strong><small>Name your circle now. We’ll choose a book and invite members next.</small><em>Get started →</em></button> : <div className="club-list">{clubs.map((club,index)=><article className="club-card" key={club.id}><div className={`club-accent accent-${index%3}`}><span>{String(index+1).padStart(2,"0")}</span></div><div><span className="pill">{club.host_id===session.user.id ? "HOST" : "MEMBER"}</span><h3>{club.name}</h3><p>{club.description || "A new reading circle, ready for its first book."}</p><div className="club-meta"><span>○ Club member</span><span>Open the shortlist</span></div></div><button onClick={()=>openClub(club)} aria-label={`Open ${club.name}`}>→</button></article>)}</div>}
     </section>
     {showCreate && <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-club-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setShowCreate(false)} aria-label="Close">×</button><span className="eyebrow coral">YOUR FIRST CIRCLE</span><h2 id="new-club-title">Create a book club</h2><p>Give your new reading space a name. You can choose the book and invite people next.</p><form onSubmit={createClub}><label>Club name<input name="name" required minLength={2} maxLength={80} placeholder="e.g. Sunday Stories" autoFocus /></label><label>Description <small>Optional</small><textarea name="description" maxLength={240} placeholder="What brings this group together?" /></label><div className="form-actions"><button type="button" className="secondary" onClick={()=>setShowCreate(false)}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Creating…" : "Create club →"}</button></div></form></section></div>}
-    {showSearch && <div className="modal-backdrop" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="book-search-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setShowSearch(false)} aria-label="Close">×</button><span className="eyebrow coral">BUILD YOUR BOOKSHELF</span><h2 id="book-search-title">Find your next book</h2><p>Search by title, author, or ISBN.</p><form className="search-form" onSubmit={searchBooks}><input aria-label="Search books" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="e.g. The Midnight Library" autoFocus/><button className="primary" disabled={searching || query.trim().length < 2}>{searching ? "Searching…" : "Search"}</button></form>{message && <p className="notice" role="status">{message}</p>}<div className="search-results">{!searching && results.length === 0 && query && <p className="search-hint">Search results will appear here.</p>}{results.map((book)=><article className="search-result" key={book.catalogId}><BookCover title={book.title} url={book.coverUrl}/><div><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.pageCount ? `${book.pageCount} pages` : "Page count unavailable"}</small>{book.description && <p>{book.description}</p>}</div><button className="secondary" disabled={savingId === book.catalogId || library.some((item)=>item.google_books_id===book.catalogId)} onClick={()=>saveBook(book)}>{library.some((item)=>item.google_books_id===book.catalogId) ? "Added ✓" : savingId===book.catalogId ? "Adding…" : "+ Add"}</button></article>)}</div><footer className="catalogue-credit">Book information provided by Open Library</footer></section></div>}
+    {activeClub && <div className="modal-backdrop" onMouseDown={() => setActiveClub(null)}><section className="modal club-modal" role="dialog" aria-modal="true" aria-labelledby="club-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setActiveClub(null)} aria-label="Close">×</button><span className="eyebrow coral">CLUB SHORTLIST</span><div className="club-modal-heading"><div><h2 id="club-title">{activeClub.name}</h2><p>{activeClub.description || "Choose the story your club will share next."}</p></div><button className="primary" onClick={()=>openBookSearch(activeClub)}>＋ Nominate a book</button></div>{message && <p className="notice" role="status">{message}</p>}{clubBooks.length===0 ? <button className="shortlist-empty" onClick={()=>openBookSearch(activeClub)}><strong>No books nominated yet</strong><small>Search the catalogue and add the first contender.</small></button> : <div className="shortlist">{clubBooks.map((item)=><article className={`shortlist-book ${item.is_current?"current":""}`} key={item.book.id}><BookCover title={item.book.title} url={item.book.cover_url}/><div><span className="pill">{item.is_current?"CURRENT READ":"NOMINATED"}</span><h3>{item.book.title}</h3><p className="byline">{item.book.authors.join(", ")||"Unknown author"}</p><small>{item.book.page_count?`${item.book.page_count} pages`:"Page count unavailable"}</small></div><div className="vote-actions"><button className={item.votes.some(v=>v.user_id===session.user.id)?"voted":""} onClick={()=>toggleVote(item.book.id)}>♥ {item.votes.length}</button>{activeClub.host_id===session.user.id&&!item.is_current&&<button className="secondary" onClick={()=>chooseBook(item.book.id)}>Choose</button>}</div></article>)}</div>}</section></div>}
+    {showSearch && <div className="modal-backdrop search-layer" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="book-search-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setShowSearch(false)} aria-label="Close">×</button><span className="eyebrow coral">{searchClub?"CLUB NOMINATION":"BUILD YOUR BOOKSHELF"}</span><h2 id="book-search-title">{searchClub?`Nominate for ${searchClub.name}`:"Find your next book"}</h2><p>Search by title, author, or ISBN.</p><form className="search-form" onSubmit={searchBooks}><input aria-label="Search books" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="e.g. The Midnight Library" autoFocus/><button className="primary" disabled={searching || query.trim().length < 2}>{searching ? "Searching…" : "Search"}</button></form>{message && <p className="notice" role="status">{message}</p>}<div className="search-results">{!searching && results.length === 0 && query && <p className="search-hint">Search results will appear here.</p>}{results.map((book)=>{const alreadyAdded=searchClub?clubBooks.some((item)=>item.book.google_books_id===book.catalogId):library.some((item)=>item.google_books_id===book.catalogId);return <article className="search-result" key={book.catalogId}><BookCover title={book.title} url={book.coverUrl}/><div><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.pageCount ? `${book.pageCount} pages` : "Page count unavailable"}</small>{book.description && <p>{book.description}</p>}</div><button className="secondary" disabled={savingId === book.catalogId || alreadyAdded} onClick={()=>saveBook(book)}>{alreadyAdded?"Added ✓":savingId===book.catalogId?"Adding…":searchClub?"＋ Nominate":"＋ Add"}</button></article>})}</div><footer className="catalogue-credit">Book information provided by Open Library</footer></section></div>}
   </main>;
 }
 
