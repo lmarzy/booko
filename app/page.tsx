@@ -59,6 +59,14 @@ export default function Home() {
   const [accountOpen,setAccountOpen]=useState(false);
   const messageTimer = useRef<number | null>(null);
   const nominationTimer = useRef<number | null>(null);
+  const modalOpen = showCreate || showSearch || Boolean(activeClub) || Boolean(confirmAction) || showLibrary || showPersonalProgress || Boolean(reviewTarget);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [modalOpen]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });

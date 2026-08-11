@@ -51,6 +51,14 @@ export default function ClubPage(){
   const [invitations,setInvitations]=useState<Invitation[]>([]);
   const [managingId,setManagingId]=useState<string|null>(null);
   const toastTimer=useRef<number|null>(null);
+  const modalOpen=showSearch||Boolean(confirmAction)||showReview||showInvite;
+
+  useEffect(()=>{
+    if(!modalOpen)return;
+    const previousOverflow=document.body.style.overflow;
+    document.body.style.overflow="hidden";
+    return()=>{document.body.style.overflow=previousOverflow;};
+  },[modalOpen]);
 
   useEffect(()=>{supabase.auth.getSession().then(({data})=>{if(!data.session){window.location.href="/";return;}setSession(data.session);setChecking(false);});},[]);
   useEffect(()=>{if(session)void loadClub();},[session,clubId]);
