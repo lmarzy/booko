@@ -10,6 +10,7 @@ type Book = { catalogId:string; title:string; authors:string[]; description:stri
 type LibraryBook = { id:string; title:string; authors:string[]; description:string | null; page_count:number | null; cover_url:string | null; google_books_id:string };
 type ClubBook = { is_current:boolean; nominated_by:string; nominated_at:string; book:LibraryBook; votes:{ user_id:string }[] };
 type Invitation = { id:string; expires_at:string; club:Club };
+type ConfirmAction = { title:string; description:string; confirmLabel:string; run:()=>Promise<void> };
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
@@ -32,6 +33,9 @@ export default function Home() {
   const [createStep, setCreateStep] = useState(1);
   const [newClub, setNewClub] = useState<Club | null>(null);
   const [inviteEmails, setInviteEmails] = useState("");
+  const [toast, setToast] = useState("");
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const messageTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -44,8 +48,8 @@ export default function Home() {
 
   function showTemporaryMessage(text:string) {
     if (messageTimer.current) window.clearTimeout(messageTimer.current);
-    setMessage(text);
-    messageTimer.current = window.setTimeout(() => setMessage(""), 4000);
+    setToast(text);
+    messageTimer.current = window.setTimeout(() => setToast(""), 4000);
   }
 
   useEffect(() => {
@@ -121,22 +125,35 @@ export default function Home() {
     if (error) setMessage(error.message); else { showTemporaryMessage("The club's current book has been chosen."); await loadClubBooks(activeClub.id); }
   }
 
-  async function removeLibraryBook(book:LibraryBook) {
-    if(!window.confirm(`Remove “${book.title}” from your library?`))return;
-    const {error}=await supabase.from("user_books").delete().eq("book_id",book.id);
-    if(error)setMessage(error.message);else{showTemporaryMessage("Book removed from your library.");await loadLibrary();}
+  function removeLibraryBook(book:LibraryBook) {
+    setConfirmAction({title:"Remove this book?",description:`“${book.title}” will be removed from your personal library.`,confirmLabel:"Remove book",run:async()=>{
+      const {error}=await supabase.from("user_books").delete().eq("book_id",book.id);
+      if(error)setMessage(error.message);else{showTemporaryMessage("Book removed from your library.");await loadLibrary();}
+    }});
   }
 
-  async function removeShortlistBook(item:ClubBook) {
-    if(!activeClub||!window.confirm(`Remove “${item.book.title}” from ${activeClub.name}'s shortlist?`))return;
-    const {error}=await supabase.rpc("remove_club_book",{target_club_id:activeClub.id,target_book_id:item.book.id});
-    if(error)setMessage(error.message);else{showTemporaryMessage("Book removed from the shortlist.");await loadClubBooks(activeClub.id);}
+  function removeShortlistBook(item:ClubBook) {
+    if(!activeClub)return;
+    const club=activeClub;
+    setConfirmAction({title:"Remove this nomination?",description:`“${item.book.title}” will be removed from ${club.name}'s shortlist, including its votes.`,confirmLabel:"Remove nomination",run:async()=>{
+      const {error}=await supabase.rpc("remove_club_book",{target_club_id:club.id,target_book_id:item.book.id});
+      if(error)setMessage(error.message);else{showTemporaryMessage("Book removed from the shortlist.");await loadClubBooks(club.id);}
+    }});
   }
 
-  async function deleteClub(club:Club) {
-    if(!window.confirm(`Delete “${club.name}” and all of its invitations, nominations and votes? This cannot be undone.`))return;
-    const {error}=await supabase.from("clubs").delete().eq("id",club.id);
-    if(error)setMessage(error.message);else{if(activeClub?.id===club.id)setActiveClub(null);showTemporaryMessage("Book club deleted.");await loadClubs();}
+  function deleteClub(club:Club) {
+    setConfirmAction({title:"Delete this book club?",description:`“${club.name}” and all its invitations, nominations, and votes will be permanently deleted.`,confirmLabel:"Delete club",run:async()=>{
+      const {error}=await supabase.from("clubs").delete().eq("id",club.id);
+      if(error)setMessage(error.message);else{if(activeClub?.id===club.id)setActiveClub(null);showTemporaryMessage("Book club deleted.");await loadClubs();}
+    }});
+  }
+
+  async function runConfirmedAction() {
+    if(!confirmAction)return;
+    setConfirming(true);
+    await confirmAction.run();
+    setConfirming(false);
+    setConfirmAction(null);
   }
 
   async function submitAuth(event:FormEvent<HTMLFormElement>) {
@@ -197,14 +214,16 @@ export default function Home() {
     {pendingInvites.length>0&&<section className="invite-tray" aria-label="Club invitations"><span className="eyebrow">YOU'RE INVITED</span>{pendingInvites.map((invite)=><article key={invite.id}><div><strong>{invite.club.name}</strong><small>{invite.club.description||"A reading circle would like you to join."}</small></div><div><button className="secondary" onClick={()=>respondToInvite(invite.id,false)}>Decline</button><button className="primary" onClick={()=>respondToInvite(invite.id,true)}>Accept</button></div></article>)}</section>}
     <section className="dashboard library-section" id="reading"><div className="section-title"><div><span className="eyebrow coral">YOUR BOOKSHELF</span><h2>Books you want to read</h2></div><button className="text-button" onClick={() => openBookSearch()}>Find a book →</button></div>
       {message && <p className="notice" role="status">{message}</p>}
-      {library.length === 0 ? <button className="library-empty" onClick={() => openBookSearch()}><span>⌕</span><strong>Search for your first book</strong><small>Find it by title, author, or ISBN and add it to your reading list.</small></button> : <div className="book-grid">{library.map((book)=><article className="book-card" key={book.id}><BookCover title={book.title} url={book.cover_url}/><div><span className="pill">WANT TO READ</span><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.page_count ? `${book.page_count} pages` : "Page count unavailable"}</small><button className="remove-link" onClick={()=>removeLibraryBook(book)}>Remove</button></div></article>)}</div>}
+      {library.length === 0 ? <button className="library-empty" onClick={() => openBookSearch()}><span>⌕</span><strong>Search for your first book</strong><small>Find it by title, author, or ISBN and add it to your reading list.</small></button> : <div className="book-grid">{library.map((book)=><article className="book-card" key={book.id}><button className="delete-control" onClick={()=>removeLibraryBook(book)} aria-label={`Remove ${book.title}`}>×</button><BookCover title={book.title} url={book.cover_url}/><div><span className="pill">WANT TO READ</span><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.page_count ? `${book.page_count} pages` : "Page count unavailable"}</small></div></article>)}</div>}
     </section>
     <section className="dashboard" id="clubs"><div className="section-title"><div><span className="eyebrow coral">HOSTING & READING</span><h2>Your book clubs</h2></div><span>{clubs.length} {clubs.length === 1 ? "club" : "clubs"}</span></div>{message && <p className="notice" role="status">{message}</p>}
-      {clubs.length === 0 ? <button className="empty-state" onClick={() => setShowCreate(true)}><span>＋</span><strong>Create your first book club</strong><small>Name your circle now. We’ll choose a book and invite members next.</small><em>Get started →</em></button> : <div className="club-list">{clubs.map((club,index)=><article className="club-card" key={club.id}><div className={`club-accent accent-${index%3}`}><span>{String(index+1).padStart(2,"0")}</span></div><div><span className="pill">{club.host_id===session.user.id ? "HOST" : "MEMBER"}</span><h3>{club.name}</h3><p>{club.description || "A new reading circle, ready for its first book."}</p><div className="club-meta"><span>○ Club member</span><span>Open the shortlist</span></div></div><div className="club-actions"><button onClick={()=>openClub(club)} aria-label={`Open ${club.name}`}>→</button>{club.host_id===session.user.id&&<button className="danger-icon" onClick={()=>deleteClub(club)} aria-label={`Delete ${club.name}`}>×</button>}</div></article>)}</div>}
+      {clubs.length === 0 ? <button className="empty-state" onClick={() => setShowCreate(true)}><span>＋</span><strong>Create your first book club</strong><small>Name your circle now. We’ll choose a book and invite members next.</small><em>Get started →</em></button> : <div className="club-list">{clubs.map((club,index)=><article className="club-card" key={club.id}>{club.host_id===session.user.id&&<button className="delete-control" onClick={()=>deleteClub(club)} aria-label={`Delete ${club.name}`}>×</button>}<div className={`club-accent accent-${index%3}`}><span>{String(index+1).padStart(2,"0")}</span></div><div><span className="pill">{club.host_id===session.user.id ? "HOST" : "MEMBER"}</span><h3>{club.name}</h3><p>{club.description || "A new reading circle, ready for its first book."}</p><div className="club-meta"><span>○ Club member</span><span>Open the shortlist</span></div></div><div className="club-actions"><button onClick={()=>openClub(club)} aria-label={`Open ${club.name}`}>→</button></div></article>)}</div>}
     </section>
     {showCreate && <div className="modal-backdrop" onMouseDown={closeCreateWizard}><section className="modal wizard-modal" role="dialog" aria-modal="true" aria-labelledby="new-club-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={closeCreateWizard} aria-label="Close">×</button><div className="wizard-steps"><span className={createStep>=1?"done":""}>1</span><i/><span className={createStep>=2?"done":""}>2</span><i/><span className={createStep>=3?"done":""}>3</span></div>{createStep===1&&<><span className="eyebrow coral">STEP 1 OF 3</span><h2 id="new-club-title">Name your book club</h2><p>Give your reading circle a name and a little personality.</p><form onSubmit={createClub}><label>Club name<input name="name" required minLength={2} maxLength={80} placeholder="e.g. Sunday Stories" autoFocus /></label><label>Description <small>Optional</small><textarea name="description" maxLength={240} placeholder="What brings this group together?" /></label><div className="form-actions"><button type="button" className="secondary" onClick={closeCreateWizard}>Cancel</button><button className="primary" disabled={busy}>{busy?"Creating…":"Next: invite members →"}</button></div></form></>}{createStep===2&&<><span className="eyebrow coral">STEP 2 OF 3</span><h2 id="new-club-title">Invite your readers</h2><p>Enter email addresses separated by commas or spaces. They’ll see the invitation when they sign in with that email.</p><form onSubmit={saveInvitations}><label>Member emails<textarea value={inviteEmails} onChange={(e)=>setInviteEmails(e.target.value)} placeholder="alex@example.com, sam@example.com" autoFocus /></label><div className="form-actions"><button type="button" className="secondary" onClick={()=>setCreateStep(3)}>Skip for now</button><button className="primary" disabled={busy}>{busy?"Adding…":"Add invitations →"}</button></div></form></>}{createStep===3&&<><span className="eyebrow coral">STEP 3 OF 3</span><h2 id="new-club-title">Build the first shortlist</h2><p>Nominate a few books now, or finish and let your members add their own suggestions.</p><div className="wizard-finish"><button className="nominate-card" onClick={()=>newClub&&openBookSearch(newClub)}><span>⌕</span><strong>Search and nominate books</strong><small>Start your club’s first vote.</small></button><div className="form-actions"><button className="secondary" onClick={closeCreateWizard}>Finish for now</button><button className="primary" onClick={()=>{if(newClub){closeCreateWizard();void openClub(newClub)}}}>Open club →</button></div></div></>}</section></div>}
-    {activeClub && <div className="modal-backdrop" onMouseDown={() => setActiveClub(null)}><section className="modal club-modal" role="dialog" aria-modal="true" aria-labelledby="club-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setActiveClub(null)} aria-label="Close">×</button><span className="eyebrow coral">CLUB SHORTLIST</span><div className="club-modal-heading"><div><h2 id="club-title">{activeClub.name}</h2><p>{activeClub.description || "Choose the story your club will share next."}</p></div><button className="primary" onClick={()=>openBookSearch(activeClub)}>＋ Nominate a book</button></div>{message && <p className="notice" role="status">{message}</p>}{clubBooks.length===0 ? <button className="shortlist-empty" onClick={()=>openBookSearch(activeClub)}><strong>No books nominated yet</strong><small>Search the catalogue and add the first contender.</small></button> : <div className="shortlist">{clubBooks.map((item)=><article className={`shortlist-book ${item.is_current?"current":""}`} key={item.book.id}><BookCover title={item.book.title} url={item.book.cover_url}/><div><span className="pill">{item.is_current?"CURRENT READ":"NOMINATED"}</span><h3>{item.book.title}</h3><p className="byline">{item.book.authors.join(", ")||"Unknown author"}</p><small>{item.book.page_count?`${item.book.page_count} pages`:"Page count unavailable"}</small>{(activeClub.host_id===session.user.id||item.nominated_by===session.user.id)&&<button className="remove-link" onClick={()=>removeShortlistBook(item)}>Remove nomination</button>}</div><div className="vote-actions"><button className={item.votes.some(v=>v.user_id===session.user.id)?"voted":""} onClick={()=>toggleVote(item.book.id)}>♥ {item.votes.length}</button>{activeClub.host_id===session.user.id&&!item.is_current&&<button className="secondary" onClick={()=>chooseBook(item.book.id)}>Choose</button>}</div></article>)}</div>}</section></div>}
+    {activeClub && <div className="modal-backdrop" onMouseDown={() => setActiveClub(null)}><section className="modal club-modal" role="dialog" aria-modal="true" aria-labelledby="club-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setActiveClub(null)} aria-label="Close">×</button><span className="eyebrow coral">CLUB SHORTLIST</span><div className="club-modal-heading"><div><h2 id="club-title">{activeClub.name}</h2><p>{activeClub.description || "Choose the story your club will share next."}</p></div><button className="primary" onClick={()=>openBookSearch(activeClub)}>＋ Nominate a book</button></div>{message && <p className="notice" role="status">{message}</p>}{clubBooks.length===0 ? <button className="shortlist-empty" onClick={()=>openBookSearch(activeClub)}><strong>No books nominated yet</strong><small>Search the catalogue and add the first contender.</small></button> : <div className="shortlist">{clubBooks.map((item)=><article className={`shortlist-book ${item.is_current?"current":""}`} key={item.book.id}>{(activeClub.host_id===session.user.id||item.nominated_by===session.user.id)&&<button className="delete-control" onClick={()=>removeShortlistBook(item)} aria-label={`Remove ${item.book.title} nomination`}>×</button>}<BookCover title={item.book.title} url={item.book.cover_url}/><div><span className="pill">{item.is_current?"CURRENT READ":"NOMINATED"}</span><h3>{item.book.title}</h3><p className="byline">{item.book.authors.join(", ")||"Unknown author"}</p><small>{item.book.page_count?`${item.book.page_count} pages`:"Page count unavailable"}</small></div><div className="vote-actions"><button className={item.votes.some(v=>v.user_id===session.user.id)?"voted":""} onClick={()=>toggleVote(item.book.id)}>♥ {item.votes.length}</button>{activeClub.host_id===session.user.id&&!item.is_current&&<button className="secondary" onClick={()=>chooseBook(item.book.id)}>Choose</button>}</div></article>)}</div>}</section></div>}
     {showSearch && <div className="modal-backdrop search-layer" onMouseDown={() => setShowSearch(false)}><section className="modal search-modal" role="dialog" aria-modal="true" aria-labelledby="book-search-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setShowSearch(false)} aria-label="Close">×</button><span className="eyebrow coral">{searchClub?"CLUB NOMINATION":"BUILD YOUR BOOKSHELF"}</span><h2 id="book-search-title">{searchClub?`Nominate for ${searchClub.name}`:"Find your next book"}</h2><p>Search by title, author, or ISBN.</p><form className="search-form" onSubmit={searchBooks}><input aria-label="Search books" value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="e.g. The Midnight Library" autoFocus/><button className="primary" disabled={searching || query.trim().length < 2}>{searching ? "Searching…" : "Search"}</button></form>{message && <p className="notice" role="status">{message}</p>}<div className="search-results">{!searching && results.length === 0 && query && <p className="search-hint">Search results will appear here.</p>}{results.map((book)=>{const alreadyAdded=searchClub?clubBooks.some((item)=>item.book.google_books_id===book.catalogId):library.some((item)=>item.google_books_id===book.catalogId);return <article className="search-result" key={book.catalogId}><BookCover title={book.title} url={book.coverUrl}/><div><h3>{book.title}</h3><p className="byline">{book.authors.join(", ") || "Unknown author"}</p><small>{book.pageCount ? `${book.pageCount} pages` : "Page count unavailable"}</small>{book.description && <p>{book.description}</p>}</div><button className="secondary" disabled={savingId === book.catalogId || alreadyAdded} onClick={()=>saveBook(book)}>{alreadyAdded?"Added ✓":savingId===book.catalogId?"Adding…":searchClub?"＋ Nominate":"＋ Add"}</button></article>})}</div><footer className="catalogue-credit">Book information provided by Open Library</footer></section></div>}
+    {confirmAction&&<div className="modal-backdrop confirm-layer" onMouseDown={()=>!confirming&&setConfirmAction(null)}><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" onMouseDown={(e)=>e.stopPropagation()}><button className="close" onClick={()=>setConfirmAction(null)} disabled={confirming} aria-label="Close">×</button><span className="eyebrow coral">PLEASE CONFIRM</span><h2 id="confirm-title">{confirmAction.title}</h2><p>{confirmAction.description}</p><div className="form-actions"><button className="secondary" onClick={()=>setConfirmAction(null)} disabled={confirming}>Cancel</button><button className="danger-button" onClick={runConfirmedAction} disabled={confirming}>{confirming?"Removing…":confirmAction.confirmLabel}</button></div></section></div>}
+    {toast&&<div className="toast" role="status"><span>✓</span><p>{toast}</p><button onClick={()=>setToast("")} aria-label="Dismiss notification">×</button></div>}
   </main>;
 }
 
