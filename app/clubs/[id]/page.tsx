@@ -78,7 +78,7 @@ export default function ClubPage(){
   async function loadProgress(bookId:string){const {data,error}=await supabase.rpc("get_club_reading_progress",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else setProgress((data??[]) as Progress[]);}
   async function loadReviews(bookId:string){const {data,error}=await supabase.rpc("get_club_book_reviews",{target_club_id:clubId,target_book_id:bookId});if(error)setMessage(error.message);else setReviews((data??[]) as Review[]);}
   async function loadMembers(){const {data,error}=await supabase.rpc("get_club_members",{target_club_id:clubId});if(error)setMessage(error.message);else setMembers((data??[]) as Member[]);}
-  async function loadInvitations(){const {data,error}=await supabase.from("club_invitations").select("id,email,status,expires_at,created_at").eq("club_id",clubId).order("created_at",{ascending:false});if(error)setMessage(error.message);else setInvitations((data??[]) as Invitation[]);}
+  async function loadInvitations(){const {data,error}=await supabase.from("club_invitations").select("id,email,status,expires_at,created_at").eq("club_id",clubId).neq("status","accepted").order("created_at",{ascending:false});if(error)setMessage(error.message);else setInvitations((data??[]) as Invitation[]);}
 
   async function updateProgress(event:FormEvent<HTMLFormElement>){
     event.preventDefault();const current=books.find((item)=>item.is_current);if(!current||value==="")return;
