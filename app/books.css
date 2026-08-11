@@ -24,3 +24,5 @@
 .total-pages-field{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.04em}.total-pages-field input{width:100%;height:46px;border:1px solid #ccc4b6;border-radius:4px;background:white;color:var(--ink);padding:12px 14px;outline:none;font-size:12px}.total-pages-field input:focus{border-color:var(--coral);box-shadow:0 0 0 3px #df60441a}
 
 .current-dashboard{padding-bottom:16px}#clubs.dashboard{padding-top:34px}@media(max-width:560px){.current-dashboard{padding-bottom:8px}#clubs.dashboard{padding-top:28px}}
+
+.current-dashboard{padding-bottom:0}#clubs.dashboard{padding-top:12px}@media(max-width:560px){.current-dashboard{padding-bottom:0}#clubs.dashboard{padding-top:8px}}
