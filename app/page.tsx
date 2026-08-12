@@ -212,7 +212,7 @@ export default function Home() {
 
   async function chooseBook(bookId:string) {
     if (!activeClub) return;
-    const { error } = await supabase.rpc("select_club_book",{target_club_id:activeClub.id,target_book_id:bookId});
+    const { error } = await supabase.rpc("select_club_book",{target_club_id:activeClub.id,target_book_id:bookId,reading_weeks:4});
     if (error) setMessage(error.message); else { showTemporaryMessage("The club's current book has been chosen."); await loadClubBooks(activeClub.id); }
   }
 
