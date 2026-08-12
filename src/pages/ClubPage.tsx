@@ -1,0 +1,1501 @@
+import { FormEvent, useEffect, useRef, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "../../lib/supabase";
+import { searchBookCatalogue } from "../../lib/books";
+
+type Club = {
+  id: string;
+  host_id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+};
+type Book = {
+  catalogId: string;
+  title: string;
+  authors: string[];
+  description: string | null;
+  pageCount: number | null;
+  coverUrl: string | null;
+  isbn13: string | null;
+};
+type SavedBook = {
+  id: string;
+  title: string;
+  authors: string[];
+  description: string | null;
+  page_count: number | null;
+  cover_url: string | null;
+  google_books_id: string;
+};
+type ClubBook = {
+  is_current: boolean;
+  status: "nominated" | "current" | "finished";
+  completed_at: string | null;
+  selected_at: string | null;
+  reading_starts_at: string | null;
+  reading_ends_at: string | null;
+  nominated_by: string;
+  nominated_at: string;
+  book: SavedBook;
+  votes: { user_id: string }[];
+};
+type Progress = {
+  user_id: string;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  current_page: number | null;
+  progress_percent: number;
+  finished_at: string | null;
+};
+type Review = {
+  user_id: string;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  rating: number;
+  review: string | null;
+  updated_at: string;
+};
+type Member = {
+  user_id: string;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  role: "host" | "member";
+  joined_at: string;
+};
+type Invitation = {
+  id: string;
+  email: string;
+  status: "pending" | "accepted" | "declined" | "expired" | "revoked";
+  expires_at: string;
+  created_at: string;
+};
+type ConfirmAction = {
+  title: string;
+  description: string;
+  label: string;
+  run: () => Promise<void>;
+};
+
+function initials(firstName: string, lastName: string) {
+  return `${firstName[0]}${lastName[0]}`.toUpperCase();
+}
+
+export default function ClubPage({ clubId }: { clubId: string }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [club, setClub] = useState<Club | null>(null);
+  const [books, setBooks] = useState<ClubBook[]>([]);
+  const [progress, setProgress] = useState<Progress[]>([]);
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [message, setMessage] = useState("");
+  const [toast, setToast] = useState("");
+  const [mode, setMode] = useState<"page" | "percent">("page");
+  const [value, setValue] = useState("");
+  const [totalPages, setTotalPages] = useState("");
+  const [savingProgress, setSavingProgress] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Book[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(
+    null,
+  );
+  const [confirming, setConfirming] = useState(false);
+  const [loadingClub, setLoadingClub] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewText, setReviewText] = useState("");
+  const [savingReview, setSavingReview] = useState(false);
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteEmails, setInviteEmails] = useState("");
+  const [sendingInvites, setSendingInvites] = useState(false);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [managingId, setManagingId] = useState<string | null>(null);
+  const [chooseTarget, setChooseTarget] = useState<ClubBook | null>(null);
+  const [readingWeeks, setReadingWeeks] = useState("4");
+  const [choosingBook, setChoosingBook] = useState(false);
+  const toastTimer = useRef<number | null>(null);
+  const modalOpen =
+    showSearch ||
+    Boolean(confirmAction) ||
+    showReview ||
+    showInvite ||
+    Boolean(chooseTarget);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [modalOpen]);
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(async ({ data, error }) => {
+      if (error) {
+        await supabase.auth.signOut({ scope: "local" });
+        window.location.href = "/";
+        return;
+      }
+      if (!data.session) {
+        window.location.href = "/";
+        return;
+      }
+      setSession(data.session);
+      setChecking(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, next) => {
+      if (!next) {
+        window.location.href = "/";
+        return;
+      }
+      setSession(next);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (session) void loadClub();
+  }, [session, clubId]);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+
+  function notify(text: string) {
+    setToast(text);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(""), 4000);
+  }
+
+  async function loadClub() {
+    setLoadingClub(true);
+    const { data, error } = await supabase
+      .from("clubs")
+      .select("id,host_id,name,description,created_at")
+      .eq("id", clubId)
+      .single();
+    if (error) {
+      setMessage("This club could not be found, or you are not a member.");
+      setLoadingClub(false);
+      return;
+    }
+    setClub(data);
+    await Promise.all([
+      loadBooks(false),
+      loadMembers(),
+      data.host_id === session?.user.id ? loadInvitations() : Promise.resolve(),
+    ]);
+    setLoadingClub(false);
+  }
+
+  async function loadBooks(showRefresh = true) {
+    if (showRefresh) setRefreshing(true);
+    const { data, error } = await supabase
+      .from("club_books")
+      .select(
+        "is_current,status,completed_at,selected_at,reading_starts_at,reading_ends_at,nominated_by,nominated_at,book:books(id,title,authors,description,page_count,cover_url,google_books_id),votes:book_votes(user_id)",
+      )
+      .eq("club_id", clubId)
+      .order("is_current", { ascending: false })
+      .order("nominated_at", { ascending: false });
+    if (error) {
+      setMessage(error.message);
+      setRefreshing(false);
+      return;
+    }
+    const loaded = (data ?? []) as unknown as ClubBook[];
+    setBooks(loaded);
+    const current = loaded.find((item) => item.is_current);
+    if (current) {
+      if (!current.book.page_count) setMode("percent");
+      await Promise.all([
+        loadProgress(current.book.id),
+        loadReviews(current.book.id),
+      ]);
+    } else {
+      setProgress([]);
+      setReviews([]);
+    }
+    setRefreshing(false);
+  }
+
+  async function loadProgress(bookId: string) {
+    const { data, error } = await supabase.rpc("get_club_reading_progress", {
+      target_club_id: clubId,
+      target_book_id: bookId,
+    });
+    if (error) setMessage(error.message);
+    else setProgress((data ?? []) as Progress[]);
+  }
+  async function loadReviews(bookId: string) {
+    const { data, error } = await supabase.rpc("get_club_book_reviews", {
+      target_club_id: clubId,
+      target_book_id: bookId,
+    });
+    if (error) setMessage(error.message);
+    else setReviews((data ?? []) as Review[]);
+  }
+  async function loadMembers() {
+    const { data, error } = await supabase.rpc("get_club_members", {
+      target_club_id: clubId,
+    });
+    if (error) setMessage(error.message);
+    else setMembers((data ?? []) as Member[]);
+  }
+  async function loadInvitations() {
+    const { data, error } = await supabase
+      .from("club_invitations")
+      .select("id,email,status,expires_at,created_at")
+      .eq("club_id", clubId)
+      .neq("status", "accepted")
+      .order("created_at", { ascending: false });
+    if (error) setMessage(error.message);
+    else setInvitations((data ?? []) as Invitation[]);
+  }
+
+  async function updateProgress(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const current = books.find((item) => item.is_current);
+    if (!current || value === "") return;
+    setSavingProgress(true);
+    setMessage("");
+    const number = Number(value);
+    if (mode === "page" && !current.book.page_count) {
+      if (!totalPages || Number(totalPages) < 1) {
+        setMessage("Enter the book's total number of pages first.");
+        setSavingProgress(false);
+        return;
+      }
+      const { error: pageCountError } = await supabase.rpc(
+        "set_book_page_count",
+        {
+          target_club_id: clubId,
+          target_book_id: current.book.id,
+          total_pages: Number(totalPages),
+        },
+      );
+      if (pageCountError) {
+        setMessage(pageCountError.message);
+        setSavingProgress(false);
+        return;
+      }
+    }
+    const { error } = await supabase.rpc("update_club_reading_progress", {
+      target_club_id: clubId,
+      target_book_id: current.book.id,
+      entered_page: mode === "page" ? number : null,
+      entered_percent: mode === "percent" ? number : null,
+    });
+    if (error) setMessage(error.message);
+    else {
+      await loadBooks();
+      setValue("");
+      setTotalPages("");
+      const completed =
+        mode === "percent"
+          ? number === 100
+          : number === current.book.page_count;
+      if (completed) {
+        const existing = reviews.find(
+          (review) => review.user_id === session?.user.id,
+        );
+        setReviewRating(existing?.rating ?? 0);
+        setReviewText(existing?.review ?? "");
+        setShowReview(true);
+      } else notify("Your reading progress was updated.");
+    }
+    setSavingProgress(false);
+  }
+
+  async function saveReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const current = books.find((item) => item.is_current);
+    if (!current || reviewRating < 1) return;
+    setSavingReview(true);
+    const { error } = await supabase.rpc("save_reading_review", {
+      target_book_id: current.book.id,
+      target_rating: reviewRating,
+      review_text: reviewText,
+      target_club_id: clubId,
+    });
+    if (error) setMessage(error.message);
+    else {
+      await loadReviews(current.book.id);
+      setShowReview(false);
+      notify("Your club review was saved.");
+    }
+    setSavingReview(false);
+  }
+
+  async function inviteMembers(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const emails = inviteEmails
+      .split(/[\s,;]+/)
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    if (!emails.length) return;
+    setSendingInvites(true);
+    setMessage("");
+    const { data, error } = await supabase.rpc("invite_club_members", {
+      target_club_id: clubId,
+      invite_emails: emails,
+    });
+    if (error) setMessage(error.message);
+    else {
+      await loadInvitations();
+      setShowInvite(false);
+      setInviteEmails("");
+      window.setTimeout(
+        () =>
+          document
+            .querySelector(".member-management")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        100,
+      );
+      notify(
+        `${data} invitation${data === 1 ? "" : "s"} added. Its status is shown below.`,
+      );
+    }
+    setSendingInvites(false);
+  }
+  async function manageInvitation(
+    invitationId: string,
+    action: "resend" | "revoke",
+  ) {
+    setManagingId(invitationId);
+    const { error } = await supabase.rpc("manage_club_invitation", {
+      target_invitation_id: invitationId,
+      target_action: action,
+    });
+    if (error) setMessage(error.message);
+    else {
+      await loadInvitations();
+      notify(
+        action === "resend"
+          ? "Invitation renewed for another 14 days."
+          : "Invitation revoked.",
+      );
+    }
+    setManagingId(null);
+  }
+  function removeMember(member: Member) {
+    setConfirmAction({
+      title: "Remove this member?",
+      description: `${member.display_name} will lose access to this club. Their previous reading progress will be kept.`,
+      label: "Remove member",
+      run: async () => {
+        const { error } = await supabase.rpc("remove_club_member", {
+          target_club_id: clubId,
+          target_user_id: member.user_id,
+        });
+        if (error) setMessage(error.message);
+        else {
+          await Promise.all([loadMembers(), loadBooks()]);
+          notify(`${member.display_name} was removed from the club.`);
+        }
+      },
+    });
+  }
+
+  async function toggleVote(bookId: string) {
+    const { error } = await supabase.rpc("toggle_book_vote", {
+      target_club_id: clubId,
+      target_book_id: bookId,
+    });
+    if (error) setMessage(error.message);
+    else await loadBooks();
+  }
+  async function chooseBook(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!chooseTarget) return;
+    setChoosingBook(true);
+    const { error } = await supabase.rpc("select_club_book", {
+      target_club_id: clubId,
+      target_book_id: chooseTarget.book.id,
+      reading_weeks: Number(readingWeeks),
+    });
+    if (error) setMessage(error.message);
+    else {
+      const title = chooseTarget.book.title;
+      setChooseTarget(null);
+      await loadBooks();
+      notify(`The club has ${readingWeeks} weeks to read “${title}”.`);
+    }
+    setChoosingBook(false);
+  }
+
+  function removeBook(item: ClubBook) {
+    if (!club) return;
+    setConfirmAction({
+      title: "Remove this nomination?",
+      description: `“${item.book.title}” and its votes will be removed from ${club.name}.`,
+      label: "Remove nomination",
+      run: async () => {
+        const { error } = await supabase.rpc("remove_club_book", {
+          target_club_id: clubId,
+          target_book_id: item.book.id,
+        });
+        if (error) setMessage(error.message);
+        else {
+          await loadBooks();
+          notify("Book removed from the shortlist.");
+        }
+      },
+    });
+  }
+  function finishBook(item: ClubBook) {
+    if (!club) return;
+    setConfirmAction({
+      title: "Finish this club read?",
+      description: `“${item.book.title}” will move into ${club.name}'s reading history. Member progress will be kept.`,
+      label: "Finish book",
+      run: async () => {
+        const { error } = await supabase.rpc("finish_club_book", {
+          target_club_id: clubId,
+          target_book_id: item.book.id,
+        });
+        if (error) setMessage(error.message);
+        else {
+          await loadBooks();
+          notify("The book was added to the club's reading history.");
+        }
+      },
+    });
+  }
+  async function runConfirmed() {
+    if (!confirmAction) return;
+    setConfirming(true);
+    await confirmAction.run();
+    setConfirming(false);
+    setConfirmAction(null);
+  }
+
+  async function searchBooks(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (query.trim().length < 2) return;
+    setSearching(true);
+    setResults([]);
+    setMessage("");
+    try {
+      setResults(await searchBookCatalogue(query));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Search failed");
+    }
+    setSearching(false);
+  }
+  async function nominate(book: Book) {
+    setSavingId(book.catalogId);
+    const { error } = await supabase.rpc("nominate_book_to_club", {
+      target_club_id: clubId,
+      book_google_id: book.catalogId,
+      book_title: book.title,
+      book_authors: book.authors,
+      book_description: book.description,
+      book_page_count: book.pageCount,
+      book_cover_url: book.coverUrl,
+      book_isbn13: book.isbn13,
+    });
+    if (error) setMessage(error.message);
+    else {
+      await loadBooks();
+      setShowSearch(false);
+      notify(`“${book.title}” was added to the shortlist.`);
+    }
+    setSavingId(null);
+  }
+
+  if (checking || loadingClub) return <ClubPageSkeleton />;
+  if (!club)
+    return (
+      <main className="club-page">
+        <header className="app-header">
+          <a className="brand" href="/">
+            <span className="brand-mark">b</span>
+            <span>booko</span>
+          </a>
+        </header>
+        <section className="route-error">
+          <h1>We couldn’t open this club.</h1>
+          <p>{message}</p>
+          <a className="primary" href="/">
+            Back to dashboard
+          </a>
+        </section>
+      </main>
+    );
+  const current = books.find((item) => item.is_current) ?? null;
+  const readingEnd = current?.reading_ends_at
+    ? new Date(current.reading_ends_at)
+    : null;
+  const daysRemaining = readingEnd
+    ? Math.max(0, Math.ceil((readingEnd.getTime() - Date.now()) / 86400000))
+    : null;
+  const mine = progress.find((item) => item.user_id === session?.user.id);
+  const firstName = String(session?.user.user_metadata.first_name);
+  const lastName = String(session?.user.user_metadata.last_name);
+  const displayName = `${firstName} ${lastName}`;
+  return (
+    <main className="club-page">
+      <header className="app-header">
+        <a className="brand" href="/">
+          <span className="brand-mark">b</span>
+          <span>booko</span>
+        </a>
+        <a className="back-link" href="/">
+          ← Dashboard
+        </a>
+        <div
+          className="account-menu"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node))
+              setAccountOpen(false);
+          }}
+        >
+          <button
+            className="avatar avatar-button"
+            aria-label="Open account menu"
+            aria-expanded={accountOpen}
+            onClick={() => setAccountOpen((open) => !open)}
+          >
+            {initials(firstName, lastName)}
+          </button>
+          {accountOpen && (
+            <div className="account-popover">
+              <span className="eyebrow coral">SIGNED IN AS</span>
+              <strong>{displayName}</strong>
+              <small>{session?.user.email}</small>
+              <button
+                className="logout-button"
+                onClick={() => {
+                  setAccountOpen(false);
+                  void supabase.auth
+                    .signOut()
+                    .then(() => (window.location.href = "/"));
+                }}
+              >
+                Log out →
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+      <section className="club-page-hero">
+        <div>
+          <span className="eyebrow gold">
+            {club.host_id === session?.user.id
+              ? "YOU HOST THIS CLUB"
+              : "YOUR BOOK CLUB"}
+          </span>
+          <h1>{club.name}</h1>
+          <p>
+            {club.description ||
+              "A reading circle for shared stories and good conversation."}
+          </p>
+        </div>
+        <div className="club-hero-actions">
+          {club.host_id === session?.user.id && (
+            <button
+              className="secondary"
+              onClick={() => {
+                setInviteEmails("");
+                setShowInvite(true);
+              }}
+            >
+              ＋ Invite members
+            </button>
+          )}
+          <button
+            className="primary"
+            onClick={() => {
+              setShowSearch(true);
+              setQuery("");
+              setResults([]);
+            }}
+          >
+            ＋ Nominate a book
+          </button>
+        </div>
+      </section>
+      <div className="club-page-content">
+        {refreshing && (
+          <div className="inline-loader">
+            <i />
+            Updating your club…
+          </div>
+        )}
+        {message && <p className="notice">{message}</p>}
+        {current ? (
+          <section className="current-reading-route">
+            <div className="route-book">
+              <BookCover
+                title={current.book.title}
+                url={current.book.cover_url}
+              />
+              <div>
+                <span className="eyebrow gold">CURRENT READ</span>
+                <h2>{current.book.title}</h2>
+                <p className="byline">
+                  {current.book.authors.join(", ") || "Unknown author"}
+                </p>
+                {current.reading_starts_at && readingEnd && (
+                  <div className="reading-window">
+                    <strong>
+                      {daysRemaining === 0
+                        ? "Final day"
+                        : `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`}
+                    </strong>
+                    <span>
+                      {new Date(current.reading_starts_at).toLocaleDateString(
+                        undefined,
+                        { day: "numeric", month: "short" },
+                      )}{" "}
+                      –{" "}
+                      {readingEnd.toLocaleDateString(undefined, {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                      })}
+                    </span>
+                  </div>
+                )}
+                {current.book.description && (
+                  <p className="book-description">{current.book.description}</p>
+                )}
+                <small>
+                  {current.book.page_count
+                    ? `${current.book.page_count} pages`
+                    : "Page count unavailable"}
+                </small>
+                {club.host_id === session?.user.id && (
+                  <button
+                    className="finish-read"
+                    onClick={() => finishBook(current)}
+                  >
+                    Mark club book finished →
+                  </button>
+                )}
+              </div>
+            </div>
+            <form className="route-progress" onSubmit={updateProgress}>
+              <div className="progress-form-heading">
+                <div>
+                  <span className="eyebrow">YOUR PROGRESS</span>
+                  <small>
+                    {mine?.current_page != null && current.book.page_count
+                      ? `Page ${mine.current_page} of ${current.book.page_count}`
+                      : mode === "page" && !current.book.page_count
+                        ? "Add the book length once, then track by page."
+                        : "Update after each reading session."}
+                  </small>
+                </div>
+                <div className="mode-switch">
+                  <button
+                    type="button"
+                    className={mode === "page" ? "active" : ""}
+                    onClick={() => setMode("page")}
+                  >
+                    Page
+                  </button>
+                  <button
+                    type="button"
+                    className={mode === "percent" ? "active" : ""}
+                    onClick={() => setMode("percent")}
+                  >
+                    Percent
+                  </button>
+                </div>
+              </div>
+              <strong className="large-percent">
+                {Math.round(Number(mine?.progress_percent ?? 0))}%
+              </strong>
+              <div className="dashboard-progress">
+                <i
+                  style={{ width: `${Number(mine?.progress_percent ?? 0)}%` }}
+                />
+              </div>
+              {mode === "page" && !current.book.page_count && (
+                <label className="total-pages-field">
+                  <span>Total pages in this edition</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50000"
+                    required
+                    value={totalPages}
+                    onChange={(event) => setTotalPages(event.target.value)}
+                    placeholder="e.g. 320"
+                  />
+                </label>
+              )}
+              <div className="progress-entry">
+                <input
+                  type="number"
+                  min="0"
+                  max={
+                    mode === "page"
+                      ? (current.book.page_count ??
+                        (totalPages ? Number(totalPages) : undefined))
+                      : 100
+                  }
+                  step={mode === "page" ? 1 : 0.1}
+                  required
+                  value={value}
+                  onChange={(event) => setValue(event.target.value)}
+                  placeholder={
+                    mode === "page"
+                      ? current.book.page_count
+                        ? `0–${current.book.page_count}`
+                        : "Current page"
+                      : "0–100"
+                  }
+                />
+                <span>{mode === "page" ? "pages" : "%"}</span>
+                <button className="primary" disabled={savingProgress}>
+                  {savingProgress ? "Saving…" : "Update"}
+                </button>
+              </div>
+            </form>
+          </section>
+        ) : (
+          <section className="no-current-read">
+            <span>☰</span>
+            <div>
+              <span className="eyebrow coral">CHOOSE WHAT’S NEXT</span>
+              <h2>No current book selected</h2>
+              <p>
+                Vote on the shortlist below. The host can choose the club’s next
+                read.
+              </p>
+            </div>
+          </section>
+        )}
+        {current && (
+          <section className="route-section">
+            <div className="section-title">
+              <div>
+                <span className="eyebrow coral">THE READING CIRCLE</span>
+                <h2>Member progress</h2>
+              </div>
+              <span>
+                {progress.length} {progress.length === 1 ? "reader" : "readers"}
+              </span>
+            </div>
+            <div className="route-members">
+              {progress.map((reader) => {
+                const isCurrentUser = reader.user_id === session?.user.id;
+                return (
+                  <article
+                    className={isCurrentUser ? "current-reader" : ""}
+                    key={reader.user_id}
+                  >
+                    <span className="member-avatar">
+                      {initials(reader.first_name, reader.last_name)}
+                    </span>
+                    <div>
+                      <strong>
+                        {isCurrentUser ? "You" : reader.display_name}
+                      </strong>
+                      <div className="member-track">
+                        <i
+                          style={{
+                            width: `${Number(reader.progress_percent)}%`,
+                          }}
+                        />
+                      </div>
+                      <small>
+                        {reader.current_page != null && current.book.page_count
+                          ? `Page ${reader.current_page} of ${current.book.page_count}`
+                          : "Not started yet"}
+                      </small>
+                    </div>
+                    <b>{Math.round(Number(reader.progress_percent))}%</b>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+        <section className="route-section shortlist-route">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow coral">
+                {current ? "WHAT’S NEXT" : "CHOOSE THE FIRST READ"}
+              </span>
+              <h2>Club shortlist</h2>
+            </div>
+            <span>
+              {books.filter((item) => item.status === "nominated").length}{" "}
+              nominations
+            </span>
+          </div>
+          {books.filter((item) => item.status === "nominated").length === 0 ? (
+            <button
+              className="shortlist-empty"
+              onClick={() => setShowSearch(true)}
+            >
+              <strong>No books waiting on the shortlist</strong>
+              <small>Nominate a book to start the next vote.</small>
+            </button>
+          ) : (
+            <div className="shortlist">
+              {books
+                .filter((item) => item.status === "nominated")
+                .map((item) => (
+                  <article className="shortlist-book" key={item.book.id}>
+                    <BookCover
+                      title={item.book.title}
+                      url={item.book.cover_url}
+                    />
+                    <div>
+                      <span className="pill">NOMINATED</span>
+                      <h3>{item.book.title}</h3>
+                      <p className="byline">
+                        {item.book.authors.join(", ") || "Unknown author"}
+                      </p>
+                      <small>
+                        {item.book.page_count
+                          ? `${item.book.page_count} pages`
+                          : "Page count unavailable"}
+                      </small>
+                    </div>
+                    <div className="vote-actions">
+                      <button
+                        className={
+                          item.votes.some(
+                            (vote) => vote.user_id === session?.user.id,
+                          )
+                            ? "voted"
+                            : ""
+                        }
+                        onClick={() => toggleVote(item.book.id)}
+                      >
+                        ♥ {item.votes.length}
+                      </button>
+                      {club.host_id === session?.user.id && !current && (
+                        <button
+                          className="secondary"
+                          onClick={() => {
+                            setReadingWeeks("4");
+                            setChooseTarget(item);
+                          }}
+                        >
+                          Choose
+                        </button>
+                      )}
+                      {(club.host_id === session?.user.id ||
+                        item.nominated_by === session?.user.id) && (
+                        <button
+                          className="remove-action"
+                          onClick={() => removeBook(item)}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+            </div>
+          )}
+        </section>
+        {books.some((item) => item.status === "finished") && (
+          <section className="route-section club-history">
+            <div className="section-title">
+              <div>
+                <span className="eyebrow coral">CLUB HISTORY</span>
+                <h2>Books you’ve read together</h2>
+              </div>
+              <span>
+                {books.filter((item) => item.status === "finished").length}{" "}
+                finished
+              </span>
+            </div>
+            <div className="history-grid">
+              {books
+                .filter((item) => item.status === "finished")
+                .map((item) => (
+                  <article key={item.book.id}>
+                    <BookCover
+                      title={item.book.title}
+                      url={item.book.cover_url}
+                    />
+                    <div>
+                      <span className="pill">READ</span>
+                      <h3>{item.book.title}</h3>
+                      <p className="byline">
+                        {item.book.authors.join(", ") || "Unknown author"}
+                      </p>
+                      <small>
+                        {item.completed_at
+                          ? `Finished ${new Date(item.completed_at).toLocaleDateString()}`
+                          : "Finished by the club"}
+                      </small>
+                    </div>
+                  </article>
+                ))}
+            </div>
+          </section>
+        )}
+      </div>
+      {showSearch && (
+        <div
+          className="modal-backdrop search-layer"
+          onMouseDown={() => setShowSearch(false)}
+        >
+          <section
+            className="modal search-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="close" onClick={() => setShowSearch(false)}>
+              ×
+            </button>
+            <span className="eyebrow coral">CLUB NOMINATION</span>
+            <h2>Nominate for {club.name}</h2>
+            <p>Search by title, author, or ISBN.</p>
+            <form className="search-form" onSubmit={searchBooks}>
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="e.g. The Midnight Library"
+                autoFocus
+              />
+              <button
+                className="primary"
+                disabled={searching || query.trim().length < 2}
+              >
+                {searching ? "Searching…" : "Search"}
+              </button>
+            </form>
+            <div className="search-results">
+              {results.map((book) => {
+                const added = books.some(
+                  (item) => item.book.google_books_id === book.catalogId,
+                );
+                return (
+                  <article className="search-result" key={book.catalogId}>
+                    <BookCover title={book.title} url={book.coverUrl} />
+                    <div>
+                      <h3>{book.title}</h3>
+                      <p className="byline">
+                        {book.authors.join(", ") || "Unknown author"}
+                      </p>
+                      <small>
+                        {book.pageCount
+                          ? `${book.pageCount} pages`
+                          : "Page count unavailable"}
+                      </small>
+                      {book.description && <p>{book.description}</p>}
+                    </div>
+                    <button
+                      className="secondary"
+                      disabled={added || savingId === book.catalogId}
+                      onClick={() => nominate(book)}
+                    >
+                      {added
+                        ? "On shortlist ✓"
+                        : savingId === book.catalogId
+                          ? "Nominating…"
+                          : "Nominate →"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      )}
+      {confirmAction && (
+        <div
+          className="modal-backdrop confirm-layer"
+          onMouseDown={() => !confirming && setConfirmAction(null)}
+        >
+          <section
+            className="modal confirm-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button className="close" onClick={() => setConfirmAction(null)}>
+              ×
+            </button>
+            <span className="eyebrow coral">PLEASE CONFIRM</span>
+            <h2>{confirmAction.title}</h2>
+            <p>{confirmAction.description}</p>
+            <div className="form-actions">
+              <button
+                className="secondary"
+                onClick={() => setConfirmAction(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger-button"
+                onClick={runConfirmed}
+                disabled={confirming}
+              >
+                {confirming ? "Removing…" : confirmAction.label}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {chooseTarget && (
+        <div
+          className="modal-backdrop confirm-layer"
+          onMouseDown={() => !choosingBook && setChooseTarget(null)}
+        >
+          <section
+            className="modal confirm-modal timeframe-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="timeframe-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="close"
+              onClick={() => setChooseTarget(null)}
+              disabled={choosingBook}
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <span className="eyebrow coral">SET THE READING PACE</span>
+            <h2 id="timeframe-title">
+              How long for “{chooseTarget.book.title}”?
+            </h2>
+            <p>
+              The reading period starts today. Everyone in the club will see the
+              dates and countdown.
+            </p>
+            <form onSubmit={chooseBook}>
+              <label>
+                Reading period
+                <select
+                  value={readingWeeks}
+                  onChange={(event) => setReadingWeeks(event.target.value)}
+                >
+                  {Array.from({ length: 12 }, (_, index) => index + 1).map(
+                    (weeks) => (
+                      <option key={weeks} value={weeks}>
+                        {weeks} {weeks === 1 ? "week" : "weeks"}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              <div className="timeframe-preview">
+                <span>
+                  Starts{" "}
+                  <strong>
+                    {new Date().toLocaleDateString(undefined, {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </strong>
+                </span>
+                <span>
+                  Ends{" "}
+                  <strong>
+                    {new Date(
+                      Date.now() + Number(readingWeeks) * 7 * 86400000,
+                    ).toLocaleDateString(undefined, {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </strong>
+                </span>
+              </div>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setChooseTarget(null)}
+                  disabled={choosingBook}
+                >
+                  Cancel
+                </button>
+                <button className="primary" disabled={choosingBook}>
+                  {choosingBook ? "Choosing…" : "Start club read →"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          <span>✓</span>
+          <p>{toast}</p>
+          <button onClick={() => setToast("")}>×</button>
+        </div>
+      )}
+      {current && mine?.finished_at && (
+        <section className="club-reviews">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow coral">AFTER THE LAST PAGE</span>
+              <h2>Reader reviews</h2>
+            </div>
+            <button
+              className="secondary"
+              onClick={() => {
+                const existing = reviews.find(
+                  (review) => review.user_id === session?.user.id,
+                );
+                setReviewRating(existing?.rating ?? 0);
+                setReviewText(existing?.review ?? "");
+                setShowReview(true);
+              }}
+            >
+              {reviews.some((review) => review.user_id === session?.user.id)
+                ? "Edit your review"
+                : "Add your review"}
+            </button>
+          </div>
+          {reviews.length === 0 ? (
+            <div className="quiet-empty">
+              <span>★</span>
+              <div>
+                <strong>Be the first to review this book</strong>
+                <small>Ratings appear here once readers finish.</small>
+              </div>
+            </div>
+          ) : (
+            <div className="review-grid">
+              {reviews.map((review) => (
+                <article key={review.user_id}>
+                  <div>
+                    <span className="member-avatar">
+                      {initials(review.first_name, review.last_name)}
+                    </span>
+                    <strong>
+                      {review.user_id === session?.user.id
+                        ? "You"
+                        : review.display_name}
+                    </strong>
+                  </div>
+                  <b aria-label={`${review.rating} out of 5 stars`}>
+                    {"★".repeat(review.rating)}
+                    {"☆".repeat(5 - review.rating)}
+                  </b>
+                  {review.review && <p>{review.review}</p>}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {showReview && current && (
+        <div
+          className="modal-backdrop review-layer"
+          onMouseDown={() => !savingReview && setShowReview(false)}
+        >
+          <section
+            className="modal review-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="club-review-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="close"
+              onClick={() => setShowReview(false)}
+              disabled={savingReview}
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <span className="eyebrow coral">YOU FINISHED IT</span>
+            <h2 id="club-review-title">How was {current.book.title}?</h2>
+            <p>
+              Your fellow club members can see this once they open the club.
+            </p>
+            <form onSubmit={saveReview}>
+              <fieldset className="star-rating">
+                <legend>Your rating</legend>
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    type="button"
+                    key={star}
+                    className={star <= reviewRating ? "selected" : ""}
+                    onClick={() => setReviewRating(star)}
+                    aria-label={`${star} star${star === 1 ? "" : "s"}`}
+                  >
+                    ★
+                  </button>
+                ))}
+              </fieldset>
+              <label>
+                Your review <small>Optional</small>
+                <textarea
+                  maxLength={2000}
+                  value={reviewText}
+                  onChange={(event) => setReviewText(event.target.value)}
+                  placeholder="What should the club discuss?"
+                />
+              </label>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setShowReview(false);
+                    notify(
+                      "You finished this book. Review it whenever you’re ready.",
+                    );
+                  }}
+                  disabled={savingReview}
+                >
+                  Skip for now
+                </button>
+                <button
+                  className="primary"
+                  disabled={savingReview || reviewRating < 1}
+                >
+                  {savingReview ? "Saving…" : "Share review →"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+      {showInvite && club.host_id === session?.user.id && (
+        <div
+          className="modal-backdrop invite-layer"
+          onMouseDown={() => !sendingInvites && setShowInvite(false)}
+        >
+          <section
+            className="modal invite-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="invite-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="close"
+              onClick={() => setShowInvite(false)}
+              disabled={sendingInvites}
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <span className="eyebrow coral">GROW THE READING CIRCLE</span>
+            <h2 id="invite-title">Invite members to {club.name}</h2>
+            <p>
+              Enter one or more email addresses. Existing Booko users will see
+              the invitation when they next sign in.
+            </p>
+            <form onSubmit={inviteMembers}>
+              <label>
+                Member emails{" "}
+                <small>Separate multiple addresses with commas or spaces</small>
+                <textarea
+                  value={inviteEmails}
+                  onChange={(event) => setInviteEmails(event.target.value)}
+                  placeholder="testmember@booko.test, reader@example.com"
+                  autoFocus
+                  required
+                />
+              </label>
+              {message && (
+                <p className="notice" role="status">
+                  {message}
+                </p>
+              )}
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setShowInvite(false)}
+                  disabled={sendingInvites}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary"
+                  disabled={sendingInvites || !inviteEmails.trim()}
+                >
+                  {sendingInvites ? "Adding…" : "Add invitations →"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+      {club.host_id === session?.user.id && (
+        <section className="member-management">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow coral">HOST CONTROLS</span>
+              <h2>Members & invitations</h2>
+            </div>
+            <button
+              className="primary"
+              onClick={() => {
+                setInviteEmails("");
+                setShowInvite(true);
+              }}
+            >
+              ＋ Invite members
+            </button>
+          </div>
+          <div className="management-columns">
+            <div className="management-panel">
+              <div className="management-heading">
+                <strong>Active members</strong>
+                <span>{members.length}</span>
+              </div>
+              {members.map((member) => {
+                const memberProgress = progress.find(
+                  (item) => item.user_id === member.user_id,
+                );
+                return (
+                  <article className="management-row" key={member.user_id}>
+                    <span className="member-avatar">
+                      {initials(member.first_name, member.last_name)}
+                    </span>
+                    <div>
+                      <strong>
+                        {member.user_id === session?.user.id
+                          ? "You"
+                          : member.display_name}
+                      </strong>
+                      <small>
+                        {member.role === "host"
+                          ? "Host"
+                          : current
+                            ? `${Math.round(Number(memberProgress?.progress_percent ?? 0))}% through the current book`
+                            : "Club member"}
+                      </small>
+                    </div>
+                    {member.role !== "host" && (
+                      <button
+                        className="row-action danger-text"
+                        onClick={() => removeMember(member)}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+            <div className="management-panel">
+              <div className="management-heading">
+                <strong>Invitations</strong>
+                <span>{invitations.length}</span>
+              </div>
+              {invitations.length === 0 ? (
+                <div className="management-empty">
+                  <span>✉</span>
+                  <small>No invitations have been sent yet.</small>
+                </div>
+              ) : (
+                invitations.map((invitation) => {
+                  const visibleStatus =
+                    invitation.status === "pending" &&
+                    new Date(invitation.expires_at) <= new Date()
+                      ? "expired"
+                      : invitation.status;
+                  return (
+                    <article
+                      className="management-row invitation-row"
+                      key={invitation.id}
+                    >
+                      <span className={`status-dot status-${visibleStatus}`} />
+                      <div>
+                        <strong>{invitation.email}</strong>
+                        <small
+                          className={`status-label status-${visibleStatus}`}
+                        >
+                          {visibleStatus}
+                        </small>
+                      </div>
+                      <div className="row-actions">
+                        {visibleStatus !== "accepted" && (
+                          <button
+                            className="row-action"
+                            disabled={managingId === invitation.id}
+                            onClick={() =>
+                              manageInvitation(invitation.id, "resend")
+                            }
+                          >
+                            Resend
+                          </button>
+                        )}
+                        {visibleStatus === "pending" && (
+                          <button
+                            className="row-action danger-text"
+                            disabled={managingId === invitation.id}
+                            onClick={() =>
+                              manageInvitation(invitation.id, "revoke")
+                            }
+                          >
+                            Revoke
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+    </main>
+  );
+}
+
+function BookCover({ title, url }: { title: string; url: string | null }) {
+  return url ? (
+    <img className="book-cover" src={url} alt={`Cover of ${title}`} />
+  ) : (
+    <div className="book-cover cover-placeholder">
+      <span>b</span>
+    </div>
+  );
+}
+
+function ClubPageSkeleton() {
+  return (
+    <main className="club-page skeleton-page" aria-label="Loading club">
+      <header className="app-header">
+        <a className="brand" href="/">
+          <span className="brand-mark">b</span>
+          <span>booko</span>
+        </a>
+      </header>
+      <section className="club-page-hero">
+        <div className="skeleton-copy">
+          <i />
+          <strong />
+          <span />
+        </div>
+      </section>
+      <div className="club-page-content">
+        <section className="current-reading-route skeleton-route">
+          <div />
+          <div />
+        </section>
+        <section className="route-section">
+          <div className="skeleton-title" />
+          <div className="route-members">
+            <div className="skeleton-row" />
+            <div className="skeleton-row" />
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
