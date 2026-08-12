@@ -385,11 +385,17 @@ export default function Home() {
   }
 
   async function loadInvitations() {
+    const email = session?.user.email?.trim().toLowerCase();
+    if (!email) {
+      setPendingInvites([]);
+      return;
+    }
     const { data, error } = await supabase
       .from("club_invitations")
       .select(
         "id,expires_at,club:clubs(id,host_id,name,description,created_at)",
       )
+      .eq("email", email)
       .eq("status", "pending")
       .gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false });

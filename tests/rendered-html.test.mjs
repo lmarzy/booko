@@ -43,3 +43,12 @@ test("routes book searches through a Netlify function", async () => {
   assert.match(handler, /https:\/\/openlibrary\.org\/search\.json/);
   assert.match(handler, /\{ books \}/);
 });
+
+test("only loads invitations addressed to the signed-in user", async () => {
+  const homePage = await readFile(
+    new URL("../src/pages/HomePage.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(homePage, /const email = session\?\.user\.email/);
+  assert.match(homePage, /\.eq\("email", email\)/);
+});
