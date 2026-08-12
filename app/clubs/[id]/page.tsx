@@ -1,9 +1,7 @@
-"use client";
-
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../../../lib/supabase";
+import { searchBookCatalogue } from "../../../lib/books";
 
 type Club={id:string;host_id:string;name:string;description:string|null;created_at:string};
 type Book={catalogId:string;title:string;authors:string[];description:string|null;pageCount:number|null;coverUrl:string|null;isbn13:string|null};
@@ -17,9 +15,7 @@ type ConfirmAction={title:string;description:string;label:string;run:()=>Promise
 
 function initials(firstName:string,lastName:string){return `${firstName[0]}${lastName[0]}`.toUpperCase();}
 
-export default function ClubPage(){
-  const params=useParams();
-  const clubId=String(params.id);
+export default function ClubPage({clubId}:{clubId:string}){
   const [session,setSession]=useState<Session|null>(null);
   const [checking,setChecking]=useState(true);
   const [club,setClub]=useState<Club|null>(null);
@@ -118,7 +114,7 @@ export default function ClubPage(){
   function finishBook(item:ClubBook){if(!club)return;setConfirmAction({title:"Finish this club read?",description:`“${item.book.title}” will move into ${club.name}'s reading history. Member progress will be kept.`,label:"Finish book",run:async()=>{const {error}=await supabase.rpc("finish_club_book",{target_club_id:clubId,target_book_id:item.book.id});if(error)setMessage(error.message);else{await loadBooks();notify("The book was added to the club's reading history.");}}});}
   async function runConfirmed(){if(!confirmAction)return;setConfirming(true);await confirmAction.run();setConfirming(false);setConfirmAction(null);}
 
-  async function searchBooks(event:FormEvent<HTMLFormElement>){event.preventDefault();if(query.trim().length<2)return;setSearching(true);setResults([]);setMessage("");try{const response=await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);const data=await response.json() as {books?:Book[];error?:string};if(!response.ok)throw new Error(data.error||"Search failed");setResults(data.books??[]);}catch(error){setMessage(error instanceof Error?error.message:"Search failed");}setSearching(false);}
+  async function searchBooks(event:FormEvent<HTMLFormElement>){event.preventDefault();if(query.trim().length<2)return;setSearching(true);setResults([]);setMessage("");try{setResults(await searchBookCatalogue(query));}catch(error){setMessage(error instanceof Error?error.message:"Search failed");}setSearching(false);}
   async function nominate(book:Book){setSavingId(book.catalogId);const {error}=await supabase.rpc("nominate_book_to_club",{target_club_id:clubId,book_google_id:book.catalogId,book_title:book.title,book_authors:book.authors,book_description:book.description,book_page_count:book.pageCount,book_cover_url:book.coverUrl,book_isbn13:book.isbn13});if(error)setMessage(error.message);else{await loadBooks();setShowSearch(false);notify(`“${book.title}” was added to the shortlist.`);}setSavingId(null);}
 
   if(checking||loadingClub)return <ClubPageSkeleton/>;

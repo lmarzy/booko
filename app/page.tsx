@@ -1,8 +1,7 @@
-"use client";
-
 import { FormEvent, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+import { searchBookCatalogue } from "../lib/books";
 
 type AuthMode = "signin" | "signup" | "forgot";
 type Club = { id:string; host_id:string; name:string; description:string | null; created_at:string };
@@ -180,10 +179,7 @@ export default function Home() {
     if (query.trim().length < 2) return;
     setSearching(true); setMessage(""); setResults([]);
     try {
-      const response = await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);
-      const data = await response.json() as { books?:Book[]; error?:string };
-      if (!response.ok) throw new Error(data.error || "Search failed");
-      setResults(data.books ?? []);
+      setResults(await searchBookCatalogue(query));
     } catch (error) { setMessage(error instanceof Error ? error.message : "Search failed"); }
     setSearching(false);
   }
