@@ -52,3 +52,25 @@ test("only loads invitations addressed to the signed-in user", async () => {
   assert.match(homePage, /const email = session\?\.user\.email/);
   assert.match(homePage, /\.eq\("email", email\)/);
 });
+
+test("keeps shared club books private to club members", async () => {
+  const migration = await readFile(
+    new URL(
+      "../supabase/migrations/20260822120000_club_book_access.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const clubPage = await readFile(
+    new URL("../src/pages/ClubPage.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /'club-books',[\s\S]*false/);
+  assert.match(migration, /public\.is_club_member/);
+  assert.match(migration, /public\.is_club_host/);
+  assert.match(migration, /application\/pdf/);
+  assert.match(migration, /application\/epub\+zip/);
+  assert.match(clubPage, /createSignedUrl\(path, 300\)/);
+  assert.match(clubPage, /I own this work/);
+});

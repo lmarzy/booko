@@ -35,11 +35,14 @@ type ClubBook = {
   selected_at: string | null;
   reading_starts_at: string | null;
   reading_ends_at: string | null;
+  access_links: AccessLink[];
+  access_file_path: string | null;
   nominated_by: string;
   nominated_at: string;
   book: SavedBook;
   votes: { user_id: string }[];
 };
+type AccessLink = { label: string; url: string };
 type Progress = {
   user_id: string;
   display_name: string;
@@ -122,12 +125,21 @@ export default function ClubPage({ clubId }: { clubId: string }) {
   const [chooseTarget, setChooseTarget] = useState<ClubBook | null>(null);
   const [readingWeeks, setReadingWeeks] = useState("4");
   const [choosingBook, setChoosingBook] = useState(false);
+  const [accessLinks, setAccessLinks] = useState<AccessLink[]>([
+    { label: "", url: "" },
+  ]);
+  const [accessFile, setAccessFile] = useState<File | null>(null);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [showAccess, setShowAccess] = useState(false);
+  const [savingAccess, setSavingAccess] = useState(false);
+  const [removeAccessFile, setRemoveAccessFile] = useState(false);
   const toastTimer = useRef<number | null>(null);
   const modalOpen =
     showSearch ||
     Boolean(confirmAction) ||
     showReview ||
     showInvite ||
+    showAccess ||
     Boolean(chooseTarget);
 
   useEffect(() => {
@@ -204,7 +216,7 @@ export default function ClubPage({ clubId }: { clubId: string }) {
     const { data, error } = await supabase
       .from("club_books")
       .select(
-        "is_current,status,completed_at,selected_at,reading_starts_at,reading_ends_at,nominated_by,nominated_at,book:books(id,title,authors,description,page_count,cover_url,google_books_id),votes:book_votes(user_id)",
+        "is_current,status,completed_at,selected_at,reading_starts_at,reading_ends_at,access_links,access_file_path,nominated_by,nominated_at,book:books(id,title,authors,description,page_count,cover_url,google_books_id),votes:book_votes(user_id)",
       )
       .eq("club_id", clubId)
       .order("is_current", { ascending: false })
@@ -420,19 +432,163 @@ export default function ClubPage({ clubId }: { clubId: string }) {
     event.preventDefault();
     if (!chooseTarget) return;
     setChoosingBook(true);
+    const links = cleanAccessLinks();
+    if (!links) {
+      setChoosingBook(false);
+      return;
+    }
+    let filePath: string | null = null;
+    if (accessFile) {
+      if (!rightsConfirmed) {
+        setMessage("Confirm that you have permission to share this file.");
+        setChoosingBook(false);
+        return;
+      }
+      filePath = await uploadAccessFile(chooseTarget.book.id, accessFile);
+      if (!filePath) {
+        setChoosingBook(false);
+        return;
+      }
+    }
     const { error } = await supabase.rpc("select_club_book", {
       target_club_id: clubId,
       target_book_id: chooseTarget.book.id,
       reading_weeks: Number(readingWeeks),
+      book_access_links: links,
+      book_access_file_path: filePath,
     });
-    if (error) setMessage(error.message);
-    else {
+    if (error) {
+      setMessage(error.message);
+      if (filePath)
+        await supabase.storage.from("club-books").remove([filePath]);
+    } else {
       const title = chooseTarget.book.title;
       setChooseTarget(null);
+      resetAccessForm();
       await loadBooks();
       notify(`The club has ${readingWeeks} weeks to read “${title}”.`);
     }
     setChoosingBook(false);
+  }
+
+  function cleanAccessLinks() {
+    const links = accessLinks.filter(
+      (link) => link.label.trim() || link.url.trim(),
+    );
+    for (const link of links) {
+      try {
+        const url = new URL(link.url);
+        if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+      } catch {
+        setMessage("Each book link needs a valid http or https address.");
+        return null;
+      }
+      if (!link.label.trim()) {
+        setMessage(
+          "Give each book link a short label, such as Bookshop or Library.",
+        );
+        return null;
+      }
+    }
+    return links.map((link) => ({
+      label: link.label.trim().slice(0, 60),
+      url: link.url.trim(),
+    }));
+  }
+
+  async function uploadAccessFile(bookId: string, file: File) {
+    if (file.size > 50 * 1024 * 1024) {
+      setMessage("The PDF or EPUB must be 50 MB or smaller.");
+      return null;
+    }
+    const extension = file.name.toLowerCase().endsWith(".epub")
+      ? "epub"
+      : "pdf";
+    const path = `${clubId}/${bookId}/${crypto.randomUUID()}.${extension}`;
+    const { error } = await supabase.storage
+      .from("club-books")
+      .upload(path, file, {
+        contentType:
+          extension === "epub" ? "application/epub+zip" : "application/pdf",
+      });
+    if (error) {
+      setMessage(error.message);
+      return null;
+    }
+    return path;
+  }
+
+  function resetAccessForm() {
+    setAccessLinks([{ label: "", url: "" }]);
+    setAccessFile(null);
+    setRightsConfirmed(false);
+    setRemoveAccessFile(false);
+  }
+
+  function openAccessEditor(item: ClubBook) {
+    setAccessLinks(
+      item.access_links.length ? item.access_links : [{ label: "", url: "" }],
+    );
+    setAccessFile(null);
+    setRightsConfirmed(false);
+    setRemoveAccessFile(false);
+    setShowAccess(true);
+  }
+
+  async function saveBookAccess(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!current) return;
+    setSavingAccess(true);
+    const links = cleanAccessLinks();
+    if (!links) {
+      setSavingAccess(false);
+      return;
+    }
+    let filePath = removeAccessFile ? null : current.access_file_path;
+    let newlyUploadedPath: string | null = null;
+    if (accessFile) {
+      if (!rightsConfirmed) {
+        setMessage("Confirm that you have permission to share this file.");
+        setSavingAccess(false);
+        return;
+      }
+      const uploaded = await uploadAccessFile(current.book.id, accessFile);
+      if (!uploaded) {
+        setSavingAccess(false);
+        return;
+      }
+      filePath = uploaded;
+      newlyUploadedPath = uploaded;
+    }
+    const { error } = await supabase.rpc("set_club_book_access", {
+      target_club_id: clubId,
+      target_book_id: current.book.id,
+      book_access_links: links,
+      book_access_file_path: filePath,
+    });
+    if (error) {
+      setMessage(error.message);
+      if (newlyUploadedPath)
+        await supabase.storage.from("club-books").remove([newlyUploadedPath]);
+    } else {
+      if ((accessFile || removeAccessFile) && current.access_file_path)
+        await supabase.storage
+          .from("club-books")
+          .remove([current.access_file_path]);
+      setShowAccess(false);
+      resetAccessForm();
+      await loadBooks();
+      notify("Book access details updated.");
+    }
+    setSavingAccess(false);
+  }
+
+  async function openSharedBook(path: string) {
+    const { data, error } = await supabase.storage
+      .from("club-books")
+      .createSignedUrl(path, 300);
+    if (error) setMessage(error.message);
+    else window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
   function removeBook(item: ClubBook) {
@@ -677,6 +833,45 @@ export default function ClubPage({ clubId }: { clubId: string }) {
                     ? `${current.book.page_count} pages`
                     : "Page count unavailable"}
                 </small>
+                <div className="book-access-panel">
+                  <span className="eyebrow gold">GET THE BOOK</span>
+                  {current.access_links.length > 0 ||
+                  current.access_file_path ? (
+                    <div className="book-access-actions">
+                      {current.access_links.map((link) => (
+                        <a
+                          key={`${link.label}-${link.url}`}
+                          href={link.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {link.label} ↗
+                        </a>
+                      ))}
+                      {current.access_file_path && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void openSharedBook(current.access_file_path!)
+                          }
+                        >
+                          Read or download shared copy ↗
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <small>Access details haven’t been added yet.</small>
+                  )}
+                  {club.host_id === session?.user.id && (
+                    <button
+                      type="button"
+                      className="edit-access"
+                      onClick={() => openAccessEditor(current)}
+                    >
+                      Edit access details
+                    </button>
+                  )}
+                </div>
                 {club.host_id === session?.user.id && (
                   <button
                     className="finish-read"
@@ -886,6 +1081,7 @@ export default function ClubPage({ clubId }: { clubId: string }) {
                         <button
                           className="secondary"
                           onClick={() => {
+                            resetAccessForm();
                             setReadingWeeks("4");
                             setChooseTarget(item);
                           }}
@@ -1115,6 +1311,14 @@ export default function ClubPage({ clubId }: { clubId: string }) {
                   </strong>
                 </span>
               </div>
+              <AccessFields
+                links={accessLinks}
+                setLinks={setAccessLinks}
+                file={accessFile}
+                setFile={setAccessFile}
+                rightsConfirmed={rightsConfirmed}
+                setRightsConfirmed={setRightsConfirmed}
+              />
               <div className="form-actions">
                 <button
                   type="button"
@@ -1126,6 +1330,60 @@ export default function ClubPage({ clubId }: { clubId: string }) {
                 </button>
                 <button className="primary" disabled={choosingBook}>
                   {choosingBook ? "Choosing…" : "Start club read →"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+      {showAccess && current && (
+        <div
+          className="modal-backdrop confirm-layer"
+          onMouseDown={() => !savingAccess && setShowAccess(false)}
+        >
+          <section
+            className="modal confirm-modal access-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="access-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="close"
+              onClick={() => setShowAccess(false)}
+              disabled={savingAccess}
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <span className="eyebrow coral">READING ACCESS</span>
+            <h2 id="access-title">How can members get the book?</h2>
+            <p>
+              Add purchase or borrowing links, or share a permitted PDF or EPUB.
+            </p>
+            <form onSubmit={saveBookAccess}>
+              <AccessFields
+                links={accessLinks}
+                setLinks={setAccessLinks}
+                file={accessFile}
+                setFile={setAccessFile}
+                rightsConfirmed={rightsConfirmed}
+                setRightsConfirmed={setRightsConfirmed}
+                existingFile={Boolean(current.access_file_path)}
+                removeExisting={removeAccessFile}
+                setRemoveExisting={setRemoveAccessFile}
+              />
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setShowAccess(false)}
+                  disabled={savingAccess}
+                >
+                  Cancel
+                </button>
+                <button className="primary" disabled={savingAccess}>
+                  {savingAccess ? "Saving…" : "Save access details"}
                 </button>
               </div>
             </form>
@@ -1463,6 +1721,138 @@ function BookCover({ title, url }: { title: string; url: string | null }) {
   ) : (
     <div className="book-cover cover-placeholder">
       <span>b</span>
+    </div>
+  );
+}
+
+function AccessFields({
+  links,
+  setLinks,
+  file,
+  setFile,
+  rightsConfirmed,
+  setRightsConfirmed,
+  existingFile = false,
+  removeExisting = false,
+  setRemoveExisting,
+}: {
+  links: AccessLink[];
+  setLinks: (links: AccessLink[]) => void;
+  file: File | null;
+  setFile: (file: File | null) => void;
+  rightsConfirmed: boolean;
+  setRightsConfirmed: (confirmed: boolean) => void;
+  existingFile?: boolean;
+  removeExisting?: boolean;
+  setRemoveExisting?: (remove: boolean) => void;
+}) {
+  function updateLink(index: number, field: keyof AccessLink, value: string) {
+    setLinks(
+      links.map((link, linkIndex) =>
+        linkIndex === index ? { ...link, [field]: value } : link,
+      ),
+    );
+  }
+
+  return (
+    <div className="access-fields">
+      <div className="access-heading">
+        <div>
+          <strong>Purchase or borrowing links</strong>
+          <small>
+            Optional — add up to five places members can get the book.
+          </small>
+        </div>
+        {links.length < 5 && (
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setLinks([...links, { label: "", url: "" }])}
+          >
+            ＋ Add link
+          </button>
+        )}
+      </div>
+      {links.map((link, index) => (
+        <div className="access-link-row" key={index}>
+          <label>
+            Label
+            <input
+              value={link.label}
+              maxLength={60}
+              placeholder="Bookshop, Amazon or Library"
+              onChange={(event) =>
+                updateLink(index, "label", event.target.value)
+              }
+            />
+          </label>
+          <label>
+            Web address
+            <input
+              type="url"
+              value={link.url}
+              placeholder="https://…"
+              onChange={(event) => updateLink(index, "url", event.target.value)}
+            />
+          </label>
+          {links.length > 1 && (
+            <button
+              type="button"
+              className="remove-link"
+              aria-label={`Remove link ${index + 1}`}
+              onClick={() => setLinks(links.filter((_, i) => i !== index))}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="access-upload">
+        <strong>Share a permitted copy</strong>
+        <small>
+          Optional PDF or EPUB, up to 50 MB. Only club members can open it.
+        </small>
+        {existingFile && !removeExisting && !file && (
+          <div className="existing-file">
+            <span>✓ A private copy is currently available</span>
+            <button type="button" onClick={() => setRemoveExisting?.(true)}>
+              Remove
+            </button>
+          </div>
+        )}
+        {existingFile && removeExisting && !file && (
+          <div className="existing-file removing">
+            <span>The existing copy will be removed when you save.</span>
+            <button type="button" onClick={() => setRemoveExisting?.(false)}>
+              Keep it
+            </button>
+          </div>
+        )}
+        <input
+          className="file-input"
+          type="file"
+          accept=".pdf,.epub,application/pdf,application/epub+zip"
+          onChange={(event) => {
+            const nextFile = event.target.files?.[0] ?? null;
+            setFile(nextFile);
+            if (nextFile) setRemoveExisting?.(false);
+          }}
+        />
+        {file && <small className="selected-file">Selected: {file.name}</small>}
+        {file && (
+          <label className="rights-check">
+            <input
+              type="checkbox"
+              checked={rightsConfirmed}
+              onChange={(event) => setRightsConfirmed(event.target.checked)}
+            />
+            <span>
+              I own this work, it is in the public domain, or I have permission
+              to share it with this club.
+            </span>
+          </label>
+        )}
+      </div>
     </div>
   );
 }
